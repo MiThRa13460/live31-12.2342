@@ -1100,6 +1100,230 @@
     setInterval(() => MemoryMonitor.check(), 60000);
   </script>
   <script>
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // SYSTÈME D'ASSOCIATION PILOTES SimHub ↔ Équipage v33
+    // ═══════════════════════════════════════════════════════════════════════════════
+    
+    // Statuts possibles pour un pilote
+    const PILOT_STATUS = {
+      ON_TRACK: { id: 'on_track', icon: '🟢', label: 'EN PISTE', color: '#3fb950' },
+      IN_PIT: { id: 'in_pit', icon: '🟡', label: 'AU STAND', color: '#f0883e' },
+      STANDBY: { id: 'standby', icon: '🔵', label: 'SECOURS', color: '#58a6ff' },
+      OFFLINE: { id: 'offline', icon: '⚫', label: 'OFFLINE', color: '#7d8590' },
+      SPECTATOR: { id: 'spectator', icon: '👁️', label: 'SPECTATEUR', color: '#a371f7' }
+    };
+    
+    const DriverMatchingSystem = {
+      associations: new Map(),
+      reverseAssociations: new Map(),
+      pilotStatuses: new Map(),
+      lastSeen: new Map(),
+      spectatorDrivers: new Set(),
+      
+      normalizeName(name) {
+        if (!name) return '';
+        return name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '').trim();
+      },
+      
+      calculateSimilarity(name1, name2) {
+        const n1 = this.normalizeName(name1);
+        const n2 = this.normalizeName(name2);
+        if (!n1 || !n2) return 0;
+        if (n1 === n2) return 100;
+        if (n1.includes(n2) || n2.includes(n1)) return 80;
+        if (n1.startsWith(n2.slice(0, 3)) || n2.startsWith(n1.slice(0, 3))) return 60;
+        const maxLen = Math.max(n1.length, n2.length);
+        let matches = 0;
+        for (let i = 0; i < Math.min(n1.length, n2.length); i++) {
+          if (n1[i] === n2[i]) matches++;
+        }
+        return Math.round((matches / maxLen) * 100);
+      },
+      
+      findBestMatch(simhubDriverName, teamPilots) {
+        if (!simhubDriverName || !teamPilots?.length) return null;
+        let bestMatch = null, bestScore = 0;
+        for (const pilot of teamPilots) {
+          if (!pilot.name || pilot.active === false) continue;
+          const score = this.calculateSimilarity(simhubDriverName, pilot.name);
+          const badgeScore = pilot.badge ? this.calculateSimilarity(simhubDriverName, pilot.badge) : 0;
+          const finalScore = Math.max(score, badgeScore);
+          if (finalScore > bestScore && finalScore >= 50) {
+            bestScore = finalScore;
+            bestMatch = { pilot, score: finalScore };
+          }
+        }
+        return bestMatch;
+      },
+      
+      updateFromTelemetry(telemetryData, teams) {
+        if (!telemetryData || !teams) return;
+        const now = Date.now();
+        const activeDrivers = new Set();
+        
+        Object.entries(telemetryData).forEach(([carNum, carData]) => {
+          if (!carData || !carData.driverName) return;
+          if (carData.timestamp && (now - carData.timestamp) > 15000) return;
+          
+          const driverName = carData.driverName;
+          const isInPit = carData.isInPit === 1;
+          const isSpectator = carData.isSpectator === true;
+          
+          for (const team of teams) {
+            const match = this.findBestMatch(driverName, team.pilots);
+            if (match && match.score >= 50) {
+              const pilotId = match.pilot.id;
+              this.associations.set(pilotId, carNum);
+              this.reverseAssociations.set(carNum, pilotId);
+              this.lastSeen.set(pilotId, now);
+              activeDrivers.add(pilotId);
+              
+              let status;
+              if (isSpectator) {
+                status = PILOT_STATUS.SPECTATOR;
+                this.spectatorDrivers.add(pilotId);
+              } else if (isInPit) {
+                status = PILOT_STATUS.IN_PIT;
+                this.spectatorDrivers.delete(pilotId);
+              } else {
+                status = PILOT_STATUS.ON_TRACK;
+                this.spectatorDrivers.delete(pilotId);
+              }
+              
+              this.pilotStatuses.set(pilotId, {
+                ...status,
+                carNumber: carNum,
+                driverName: driverName,
+                teamName: team.name,
+                matchScore: match.score,
+                lastUpdate: now,
+                isInPit,
+                speed: carData.speedKmh || carData.speed || 0,
+                currentLap: carData.currentLap
+              });
+              break;
+            }
+          }
+        });
+        
+        for (const team of teams) {
+          for (const pilot of team.pilots) {
+            if (!pilot.id || pilot.active === false) continue;
+            if (!activeDrivers.has(pilot.id)) {
+              const lastSeenTime = this.lastSeen.get(pilot.id);
+              const wasRecentlyActive = lastSeenTime && (now - lastSeenTime) < 30000;
+              
+              if (this.spectatorDrivers.has(pilot.id)) {
+                this.pilotStatuses.set(pilot.id, { ...PILOT_STATUS.STANDBY, teamName: team.name, lastUpdate: now, note: 'Prêt pour relève au stand' });
+              } else if (wasRecentlyActive) {
+                this.pilotStatuses.set(pilot.id, { ...PILOT_STATUS.IN_PIT, teamName: team.name, lastUpdate: now });
+              } else {
+                this.pilotStatuses.set(pilot.id, { ...PILOT_STATUS.OFFLINE, teamName: team.name, lastUpdate: now });
+              }
+            }
+          }
+        }
+      },
+      
+      getPilotStatus(pilotId) {
+        return this.pilotStatuses.get(pilotId) || { ...PILOT_STATUS.OFFLINE };
+      },
+      
+      getTeamStatuses(teamPilots) {
+        if (!teamPilots) return [];
+        return teamPilots.map(p => ({ ...p, connectionStatus: this.getPilotStatus(p.id) }));
+      },
+      
+      getOnTrackPilot(teamPilots) {
+        if (!teamPilots) return null;
+        for (const pilot of teamPilots) {
+          const status = this.pilotStatuses.get(pilot.id);
+          if (status?.id === 'on_track') return { ...pilot, status };
+        }
+        return null;
+      },
+      
+      getStandbyPilots(teamPilots) {
+        if (!teamPilots) return [];
+        return teamPilots.filter(pilot => {
+          const status = this.pilotStatuses.get(pilot.id);
+          return status?.id === 'standby' || status?.id === 'in_pit';
+        }).map(p => ({ ...p, status: this.pilotStatuses.get(p.id) }));
+      },
+      
+      reset() {
+        this.associations.clear();
+        this.reverseAssociations.clear();
+        this.pilotStatuses.clear();
+        this.lastSeen.clear();
+        this.spectatorDrivers.clear();
+      }
+    };
+    
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // CALCUL TEMPS FALLBACK - Pire temps du combo si pilote non connecté
+    // ═══════════════════════════════════════════════════════════════════════════════
+    
+    const FallbackTimeCalculator = {
+      getWorstComboTime(teamPilots, comboKey, pilotComboTimes, defaultTime = '1:50.000') {
+        if (!teamPilots?.length || !pilotComboTimes) return defaultTime;
+        const activePilots = teamPilots.filter(p => p.active !== false && p.name);
+        if (activePilots.length === 0) return defaultTime;
+        let worstTime = null, worstTimeSec = 0;
+        for (const pilot of activePilots) {
+          const key = pilot.id + '_' + comboKey;
+          const timeStr = pilotComboTimes[key];
+          if (timeStr) {
+            const timeSec = parseTime(timeStr);
+            if (timeSec > worstTimeSec) { worstTimeSec = timeSec; worstTime = timeStr; }
+          }
+        }
+        return worstTime || defaultTime;
+      },
+      
+      getBestComboTime(teamPilots, comboKey, pilotComboTimes, defaultTime = '1:48.000') {
+        if (!teamPilots?.length || !pilotComboTimes) return defaultTime;
+        const activePilots = teamPilots.filter(p => p.active !== false && p.name);
+        if (activePilots.length === 0) return defaultTime;
+        let bestTime = null, bestTimeSec = Infinity;
+        for (const pilot of activePilots) {
+          const key = pilot.id + '_' + comboKey;
+          const timeStr = pilotComboTimes[key];
+          if (timeStr) {
+            const timeSec = parseTime(timeStr);
+            if (timeSec < bestTimeSec) { bestTimeSec = timeSec; bestTime = timeStr; }
+          }
+        }
+        return bestTime || defaultTime;
+      },
+      
+      getPilotTimeWithFallback(pilot, comboKey, pilotComboTimes, teamPilots, defaultTime = '1:48.500') {
+        if (!pilot?.id) return defaultTime;
+        const status = DriverMatchingSystem.getPilotStatus(pilot.id);
+        const isConnected = status.id === 'on_track' || status.id === 'in_pit';
+        const personalKey = pilot.id + '_' + comboKey;
+        const personalTime = pilotComboTimes?.[personalKey];
+        
+        if (personalTime && isConnected) {
+          return personalTime;
+        } else if (personalTime && !isConnected) {
+          return this.getWorstComboTime(teamPilots, comboKey, pilotComboTimes, personalTime);
+        } else {
+          return this.getWorstComboTime(teamPilots, comboKey, pilotComboTimes, defaultTime);
+        }
+      },
+      
+      hasPilotTime(pilotId, comboKey, pilotComboTimes) {
+        if (!pilotId || !pilotComboTimes) return false;
+        return !!pilotComboTimes[pilotId + '_' + comboKey];
+      }
+    };
+    
+    window.AGP_DriverMatching = DriverMatchingSystem;
+    window.AGP_FallbackTime = FallbackTimeCalculator;
+    window.PILOT_STATUS = PILOT_STATUS;
+  </script>
+  <script>
 
     // ═══════════════════════════════════════════════════════════════════════════════
     // MODULE ANALYSE STRATÉGIQUE AVANCÉE - Inspiré F1/WEC
@@ -3742,7 +3966,7 @@
     const { useState, useEffect, useRef, useCallback, useMemo } = React;
 
     // ========== CONFIGURATION ==========
-    const VER = '26.0-SECTORS', SKEY = 'agp-v21';
+    const VER = '33.0-FINAL', SKEY = 'agp-v33';
     
     const FIREBASE_CONFIG = {
       apiKey: "AIzaSyCPNMbkjte9jY9jMU6Nk3y7sOEOTEn2_6k",
@@ -4511,6 +4735,7 @@
       const tireChangeEvery = parseInt(settings.tireChangeEvery) || 1;
       
       // v33 FIX: Utiliser les paramètres CONFIGURÉS par l'utilisateur, pas la "meilleure stratégie"
+      // L'utilisateur choisit son combo pneu/mixture dans les settings, on le respecte
       const tireType = settings.tireType || 'medium';
       const mixture = settings.defaultMixture || 'race';
       
@@ -4742,62 +4967,19 @@
       return <span className="mono" style={{color:'var(--blue)',fontWeight:'600',fontSize:'14px'}}>{time}</span>;
     };
 
-    // v33: Indicateur de Sync et Persistance
-    const SyncStatus = ({ status, onRefresh, connectedUsers }) => {
-      const [localStatus, setLocalStatus] = React.useState({ persistent: null, lastBackup: null });
-      
-      // Vérifier le statut de persistance au montage
-      React.useEffect(() => {
-        const checkStatus = async () => {
-          if (window.AGP_CriticalData) {
-            const stats = await window.AGP_CriticalData.getStats?.();
-            setLocalStatus({
-              persistent: window.AGP_CriticalData.isPersistent,
-              lastBackup: window.AGP_CriticalData.lastBackupTime
-            });
-          }
-        };
-        checkStatus();
-        const interval = setInterval(checkStatus, 60000); // Update every minute
-        return () => clearInterval(interval);
-      }, []);
-      
+    const SyncStatus = ({ status, onRefresh, connectedUsers, pendingOps = 0 }) => {
+      const isPersistent = window.AGP_CriticalData?.isPersistent;
+      const persistIcon = isPersistent ? ' 💾' : '';
+      const pendingIcon = pendingOps > 0 ? ` ${pendingOps}⏳` : '';
       const statusConfig = { 
-        connected: { class: 'sync-ok', icon: '🟢', text: 'Firebase OK' + (connectedUsers > 1 ? ' (' + connectedUsers + ')' : '') }, 
-        syncing: { class: 'sync-loading', icon: '🔄', text: 'Sync...' }, 
-        error: { class: 'sync-error', icon: '🔴', text: 'Erreur' }, 
-        offline: { class: 'sync-error', icon: '🔴', text: 'Local' }, 
+        connected: { class: 'sync-ok', icon: '🟢', text: 'Firebase OK' + persistIcon + (connectedUsers > 1 ? ' (' + connectedUsers + ')' : '') }, 
+        syncing: { class: 'sync-loading', icon: '🟡', text: 'Sync...' + persistIcon + pendingIcon }, 
+        error: { class: 'sync-error', icon: '🔴', text: 'Erreur ⚠️' }, 
+        offline: { class: 'sync-error', icon: '🔴', text: 'Local' + persistIcon }, 
         noconfig: { class: 'sync-error', icon: '⚙️', text: 'Config' } 
       };
       const cfg = statusConfig[status] || statusConfig.offline;
-      
-      // Indicateur de persistance locale
-      const persistIcon = localStatus.persistent === true ? '💾' : localStatus.persistent === false ? '⚠️' : '⏳';
-      const persistTitle = localStatus.persistent === true 
-        ? 'Stockage persistant activé - Données protégées' 
-        : localStatus.persistent === false 
-          ? 'Stockage standard - Export recommandé!' 
-          : 'Vérification...';
-      
-      return (
-        <div style={{display:'flex',alignItems:'center',gap:'6px'}}>
-          <div className={'sync-indicator ' + cfg.class}>
-            <span style={{display:'inline-block'}}>{cfg.icon}</span>
-            <span>{cfg.text}</span>
-          </div>
-          <div 
-            title={persistTitle + (localStatus.lastBackup ? '\nDernier backup: ' + new Date(localStatus.lastBackup).toLocaleTimeString() : '')}
-            style={{
-              fontSize:'14px',
-              cursor:'help',
-              opacity: localStatus.persistent === false ? 1 : 0.7
-            }}
-          >
-            {persistIcon}
-          </div>
-          <button className="btn btn-ghost btn-sm" onClick={onRefresh} disabled={status === 'syncing'} title="Actualiser">🔄</button>
-        </div>
-      );
+      return (<div style={{display:'flex',alignItems:'center',gap:'4px'}}><div className={'sync-indicator ' + cfg.class}><span style={{display:'inline-block'}}>{cfg.icon}</span><span>{cfg.text}</span></div><button className="btn btn-ghost btn-sm" onClick={onRefresh} disabled={status === 'syncing'} title="Actualiser">🔄</button></div>);
     };
     
     // THEME SELECTOR with team themes
@@ -10321,6 +10503,101 @@
       };
       const handleReset = () => { if (!isCreator) return; setConfirm({ title: 'RESET CHRONO ?', message: 'Remettre à zéro ?', onConfirm: () => { if (chronoIntervalRef.current) { clearInterval(chronoIntervalRef.current); chronoIntervalRef.current = null; } const newChronoState = { isRunning: false, elapsed: 0, startTs: null, offset: 0 }; setChronoState(newChronoState); saveChronoToFirebase(newChronoState); const newTeams = teams.map(t => ({ ...t, stints: (t.stints || []).map(s => ({ ...s, completed: false, realStintTime: null, incidentTime: 0, incidentNote: '' })), lastModified: Date.now() })); setTeams(newTeams); newTeams.forEach(t => saveTeamToFirebase(t)); setConfirm(null); } }); };
       const handleResetComplet = () => { if (!isCreator) return; setConfirm({ title: '⚠️ RESET COMPLET', message: 'Supprimer TOUT ?', onConfirm: () => { if (chronoIntervalRef.current) { clearInterval(chronoIntervalRef.current); chronoIntervalRef.current = null; } const newChronoState = { isRunning: false, elapsed: 0, startTs: null, offset: 0 }; setChronoState(newChronoState); saveChronoToFirebase(newChronoState); const freshTeams = defaultTeams(); setTeams(freshTeams); setSimulationResult(null); freshTeams.forEach(t => saveTeamToFirebase(t)); localStorage.removeItem(SKEY + '-teams-' + sessionId); localStorage.removeItem(SKEY + '-chrono-' + sessionId); setConfirm(null); } }); };
+      
+      // ═══ EXPORT/IMPORT BACKUP v33 ═══
+      const handleExportBackup = async () => {
+        try {
+          const backupData = {
+            version: VER,
+            timestamp: Date.now(),
+            exportDate: new Date().toISOString(),
+            sessionId,
+            teams: teams,
+            chrono: chronoState,
+            checksum: null
+          };
+          const json = JSON.stringify(backupData);
+          const buffer = new TextEncoder().encode(json);
+          const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+          backupData.checksum = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+          
+          const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `AGP-backup-${sessionId}-${new Date().toISOString().slice(0,16)}.json`;
+          a.click();
+          URL.revokeObjectURL(url);
+          alert(`✅ Backup exporté!\n\nChecksum: ${backupData.checksum.slice(0,16)}...\n${teams.length} équipes sauvegardées`);
+        } catch (error) {
+          alert(`❌ Erreur export: ${error.message}`);
+        }
+      };
+      
+      const handleImportBackup = () => {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.json';
+        input.onchange = async (e) => {
+          const file = e.target.files[0];
+          if (!file) return;
+          try {
+            const text = await file.text();
+            const backup = JSON.parse(text);
+            if (!backup.teams || !Array.isArray(backup.teams)) {
+              alert('❌ Fichier backup invalide');
+              return;
+            }
+            setConfirm({
+              title: '📥 IMPORTER BACKUP',
+              message: `Restaurer les données du ${backup.exportDate || 'backup'}?\n\n${backup.teams?.length || 0} équipes seront importées.\n\n⚠️ Les données actuelles seront REMPLACÉES!`,
+              onConfirm: () => {
+                if (backup.teams) {
+                  const importedTeams = backup.teams.map(t => ({ ...t, importedAt: Date.now() }));
+                  setTeams(importedTeams);
+                  importedTeams.forEach(t => saveTeamToFirebase(t));
+                  localStorage.setItem(SKEY + '-teams-' + sessionId, JSON.stringify(importedTeams));
+                }
+                if (backup.chrono) {
+                  setChronoState(backup.chrono);
+                  saveChronoToFirebase(backup.chrono);
+                }
+                alert(`✅ Backup importé avec succès!\n\n${backup.teams?.length || 0} équipes restaurées.`);
+                setConfirm(null);
+              }
+            });
+          } catch (error) {
+            alert(`❌ Erreur import: ${error.message}`);
+          }
+        };
+        input.click();
+      };
+      
+      // Restore depuis IndexedDB (si données Firebase perdues)
+      const handleRestoreFromIndexedDB = async () => {
+        if (!isCreator) return;
+        try {
+          const backups = await window.AGP_CriticalData?.getAllBackups?.();
+          if (!backups?.length) {
+            alert('❌ Aucun backup IndexedDB trouvé');
+            return;
+          }
+          setConfirm({
+            title: '🔄 RESTAURER DEPUIS INDEXEDDB',
+            message: `${backups.length} équipe(s) trouvées dans IndexedDB:\n\n${backups.map(b => `• ${b.teamName || b.id} (${new Date(b.timestamp).toLocaleString()})`).join('\n')}\n\nRestaurer ces données?`,
+            onConfirm: async () => {
+              const restoredTeams = backups.map(b => b.data);
+              setTeams(restoredTeams);
+              restoredTeams.forEach(t => saveTeamToFirebase(t));
+              localStorage.setItem(SKEY + '-teams-' + sessionId, JSON.stringify(restoredTeams));
+              alert(`✅ ${restoredTeams.length} équipes restaurées depuis IndexedDB`);
+              setConfirm(null);
+            }
+          });
+        } catch (error) {
+          alert(`❌ Erreur restauration: ${error.message}`);
+        }
+      };
       const handleSavePwd = () => { if (isCreator) { const updated = { ...passwords }; TEAMS.forEach(t => { if (newPwd[t]?.trim()) updated[t] = newPwd[t].trim().toUpperCase(); }); setPasswords(updated); } setShowPwdModal(false); setNewPwd({}); };
       const handleJoinSession = (code) => { onJoinSession(code); setShowSharePanel(false); };
       const handleValidateSettings = () => { 
@@ -10522,6 +10799,19 @@
                 <div style={{display:'flex',gap:'12px',justifyContent:'center'}}>
                   <button className="btn btn-danger" style={{padding:'12px 24px',fontSize:'14px'}} onClick={handleReset}>↺ RESET CHRONO</button>
                 </div>
+                
+                {/* ═══ BOUTONS BACKUP v33 ═══ */}
+                <div style={{display:'flex',gap:'12px',justifyContent:'center',marginTop:'12px',padding:'12px',background:'rgba(163,113,247,0.1)',borderRadius:'8px',border:'1px solid var(--purple)'}}>
+                  <button className="btn btn-ghost" style={{padding:'10px 16px',fontSize:'12px',border:'1px solid var(--green)'}} onClick={handleExportBackup} title="Exporter toutes les données dans un fichier JSON">
+                    📦 EXPORT BACKUP
+                  </button>
+                  <button className="btn btn-ghost" style={{padding:'10px 16px',fontSize:'12px',border:'1px solid var(--orange)'}} onClick={handleImportBackup} title="Importer les données depuis un fichier backup">
+                    📥 IMPORT BACKUP
+                  </button>
+                  <button className="btn btn-ghost" style={{padding:'10px 16px',fontSize:'12px',border:'1px solid var(--cyan)'}} onClick={handleRestoreFromIndexedDB} title="Restaurer depuis le backup IndexedDB local (si Firebase échoue)">
+                    🔄 RESTORE IndexedDB
+                  </button>
+                </div>
               </div>
               
               {/* Info */}
@@ -10537,15 +10827,60 @@
           {mainTab === 'pilots' && (
             <div className="card" style={{padding:'16px'}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'16px'}}><h3 style={{fontSize:'14px',color:'var(--blue)'}}>👥 ÉQUIPAGE</h3><div style={{display:'flex',gap:'6px'}}>{team.pilotsValidated && <span className="badge badge-green">✓ Équipage validé</span>}{team.settings.validated && <span className="badge badge-green">✓ Params validés</span>}</div></div>
+              
+              {/* Légende des statuts pilotes v33 */}
+              <div style={{display:'flex',gap:'12px',marginBottom:'12px',padding:'8px',background:'rgba(0,0,0,0.2)',borderRadius:'6px',fontSize:'10px',flexWrap:'wrap'}}>
+                <span title="Pilote en piste">🟢 En piste</span>
+                <span title="Au stand">🟡 Stand</span>
+                <span title="Connecté en spectateur, prêt pour relève">🔵 Secours</span>
+                <span title="Non connecté">⚫ Offline</span>
+              </div>
+              
               <div style={{display:'grid',gap:'12px'}}>
                 {team.pilots.map((p, i) => {
                   const pilotColor = p.color || COLORS[i];
+                  const pilotStatus = window.AGP_DriverMatching?.getPilotStatus?.(p.id) || { icon: '⚫', label: 'OFFLINE', color: '#7d8590', id: 'offline' };
+                  const isConnected = pilotStatus.id === 'on_track' || pilotStatus.id === 'in_pit';
                   return (
-                  <div key={p.id} style={{padding:'12px',background:'rgba(0,0,0,0.3)',borderRadius:'10px',opacity: p.active === false ? 0.4 : 1}}>
+                  <div key={p.id} style={{padding:'12px',background:'rgba(0,0,0,0.3)',borderRadius:'10px',opacity: p.active === false ? 0.4 : 1, border: isConnected ? `2px solid ${pilotStatus.color}` : '1px solid transparent'}}>
                     <div style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'8px'}}>
                       <span className="help-tooltip" data-help="Activer/désactiver ce pilote pour la course"><input type="checkbox" checked={p.active !== false} onChange={e => { if (!isSpectator) { const pilots = [...team.pilots]; pilots[i] = { ...p, active: e.target.checked }; updateTeam({ pilots, pilotsValidated: false }); }}} disabled={isSpectator} style={{width:'18px',height:'18px'}} /></span>
+                      
+                      {/* Indicateur de statut de connexion v33 */}
+                      <span 
+                        title={`${pilotStatus.label}${pilotStatus.carNumber ? ' - Voiture #' + pilotStatus.carNumber : ''}${pilotStatus.matchScore ? ' (Match: ' + pilotStatus.matchScore + '%)' : ''}`}
+                        style={{fontSize:'16px',cursor:'help',minWidth:'24px',textAlign:'center'}}
+                      >
+                        {pilotStatus.icon}
+                      </span>
+                      
                       <PilotBadge pilot={{...p, color: pilotColor}} size="lg" />
-                      <span className="help-tooltip" data-help="Nom complet du pilote" style={{flex:1}}><input className="input" style={{width:'100%',fontSize:'13px'}} placeholder="Nom" value={p.name || ''} disabled={isSpectator} onChange={e => { const pilots = [...team.pilots]; const newName = e.target.value; const defaults = PILOT_DEFAULTS[newName] || {}; pilots[i] = { ...p, name: newName, ...(defaults.color && !p.color ? { color: defaults.color } : {}), ...(defaults.badge && !p.badgeEmoji ? { badgeEmoji: defaults.badge } : {}) }; updateTeam({ pilots, pilotsValidated: false }); }} /></span>
+                      <span className="help-tooltip" data-help="Nom complet du pilote (doit correspondre au nom dans rFactor/SimHub pour association automatique)" style={{flex:1}}><input className="input" style={{width:'100%',fontSize:'13px'}} placeholder="Nom (identique à SimHub)" value={p.name || ''} disabled={isSpectator} onChange={e => { const pilots = [...team.pilots]; const newName = e.target.value; const defaults = PILOT_DEFAULTS[newName] || {}; pilots[i] = { ...p, name: newName, ...(defaults.color && !p.color ? { color: defaults.color } : {}), ...(defaults.badge && !p.badgeEmoji ? { badgeEmoji: defaults.badge } : {}) }; updateTeam({ pilots, pilotsValidated: false }); }} /></span>
+                      
+                      {/* Infos connexion si connecté */}
+                      {isConnected && pilotStatus.carNumber && (
+                        <div style={{display:'flex',alignItems:'center',gap:'4px',padding:'2px 8px',background:'rgba(0,0,0,0.4)',borderRadius:'4px',fontSize:'10px',color:pilotStatus.color}}>
+                          <span>#{pilotStatus.carNumber}</span>
+                          {pilotStatus.currentLap && <span>T{pilotStatus.currentLap}</span>}
+                        </div>
+                      )}
+                      
+                      {/* Bouton pilote de secours v33 */}
+                      {!isConnected && p.active !== false && !isSpectator && (
+                        <button 
+                          className="btn btn-ghost btn-sm"
+                          style={{padding:'2px 6px',fontSize:'9px',border:'1px solid var(--blue)',color:'var(--blue)'}}
+                          onClick={() => {
+                            if (window.AGP_DriverMatching) {
+                              window.AGP_DriverMatching.markAsStandby(p.id);
+                              updateTeam({ _statusUpdate: Date.now() });
+                            }
+                          }}
+                          title="Marquer comme pilote de secours (prêt pour relève au stand)"
+                        >
+                          🔵 SECOURS
+                        </button>
+                      )}
                     </div>
                     {!isSpectator && (
                       <div style={{display:'flex',alignItems:'center',gap:'8px',flexWrap:'wrap',paddingLeft:'28px'}}>
@@ -11429,7 +11764,7 @@
 
     // ========== ROOT ==========
     const App = () => {
-      // ═══ INITIALISATION PERFORMANCE & INDEXEDDB v33 ═══
+      // ═══ INITIALISATION PERFORMANCE & INDEXEDDB v32.9 ═══
       React.useEffect(() => {
         // Initialiser le gestionnaire de performance
         if (window.AGP_Perf) {
@@ -11437,60 +11772,19 @@
         }
         
         if (window.AGP_Memory) {
-          window.AGP_Memory.init().then(async () => {
+          window.AGP_Memory.init().then(() => {
             window.AGP_Logger?.info('AGP Memory Manager prêt');
             
-            // v33: Vérifier le statut de persistance et notifier
-            const isPersistent = window.AGP_CriticalData?.isPersistent;
-            
-            if (isPersistent === false) {
-              // Notification si stockage non-persistant
-              console.warn('⚠️ [AGP] Stockage NON-PERSISTANT - Les données pourraient être supprimées par le navigateur!');
-              setTimeout(() => {
-                if (window.AGP_Notifications) {
-                  window.AGP_Notifications.add({
-                    type: 'warning',
-                    title: '⚠️ Stockage non-persistant',
-                    message: 'Faites un Export JSON dans ⚙️ Paramètres avant la course!',
-                    duration: 15000
-                  });
-                }
-              }, 3000);
-            } else if (isPersistent === true) {
-              console.log('✅ [AGP] Stockage PERSISTANT activé - Données protégées');
-            }
-            
-            // Vérifier s'il y a des données récupérées du WAL (crash recovery)
-            if (window.AGP_CriticalData?.pendingSync?.length > 0) {
-              console.log('🔄 [AGP] Données récupérées après crash:', window.AGP_CriticalData.pendingSync.length);
-              if (window.AGP_Notifications) {
-                window.AGP_Notifications.add({
-                  type: 'info',
-                  title: '🔄 Données récupérées',
-                  message: window.AGP_CriticalData.pendingSync.length + ' opération(s) restaurée(s) après interruption',
-                  duration: 8000
-                });
-              }
-            }
-            
             // Vérifier s'il y a un état sauvegardé
-            const savedState = await window.AGP_Memory.getAppState();
-            if (savedState && Date.now() - savedState.savedAt < 30 * 60 * 1000) {
-              window.AGP_Logger?.info('État sauvegardé trouvé', { savedAt: new Date(savedState.savedAt).toLocaleTimeString() });
-            }
-            
+            window.AGP_Memory.getAppState().then(savedState => {
+              if (savedState && Date.now() - savedState.savedAt < 30 * 60 * 1000) {
+                window.AGP_Logger?.info('État sauvegardé trouvé', { savedAt: new Date(savedState.savedAt).toLocaleTimeString() });
+              }
+            });
           }).catch(err => {
             window.AGP_Logger?.warn('IndexedDB non disponible', { error: err.message });
-            console.error('❌ [AGP] IndexedDB ERREUR - Sauvegarde locale impossible!', err);
           });
         }
-        
-        // v33: Nettoyage au démontage
-        return () => {
-          if (window.AGP_CriticalData?.destroy) {
-            window.AGP_CriticalData.destroy();
-          }
-        };
       }, []);
       
       const [auth, setAuth] = useState(() => { try { const saved = localStorage.getItem(SKEY + '-auth'); return saved ? JSON.parse(saved) : null; } catch { return null; } });
