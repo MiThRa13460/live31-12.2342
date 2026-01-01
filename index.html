@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>TEAM AGP - Endurance Strategy 24h v32.3-FIXED</title>
+  <title>TEAM AGP - Endurance Strategy 24h v33-PERSISTENCE</title>
   <script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
@@ -606,7 +606,967 @@
     
     // Check mémoire toutes les minutes
     setInterval(() => MemoryMonitor.check(), 60000);
-  </script>
+    
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // SYSTÈME DE PERSISTANCE PROFESSIONNEL v33 - Zéro perte de données 24h
+    // ═══════════════════════════════════════════════════════════════════════════════
+    
+    // --- ProductionLogger: Logs intelligents pour production ---
+    const LogLevel = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3, SILENT: 4 };
+    
+    class ProductionLogger {
+      constructor(options = {}) {
+        this.level = options.level ?? LogLevel.WARN; // WARN+ en production
+        this.buffer = [];
+        this.maxBuffer = 100;
+        this.stats = { totalLogs: 0, errors: 0, warnings: 0 };
+      }
+      
+      _log(level, message, data) {
+        if (level < this.level) return;
+        this.stats.totalLogs++;
+        if (level >= LogLevel.ERROR) this.stats.errors++;
+        else if (level >= LogLevel.WARN) this.stats.warnings++;
+        
+        const entry = {
+          timestamp: new Date().toISOString(),
+          level: Object.keys(LogLevel)[level],
+          message,
+          data: data ? this._sanitize(data) : undefined
+        };
+        
+        this.buffer.push(entry);
+        if (this.buffer.length > this.maxBuffer) this.buffer.shift();
+        
+        const logFn = level >= LogLevel.ERROR ? console.error :
+                      level >= LogLevel.WARN ? console.warn : console.log;
+        if (level >= this.level) logFn(`[AGP ${entry.level}]`, message, data || '');
+      }
+      
+      _sanitize(data) {
+        try {
+          const str = JSON.stringify(data);
+          return str.length > 500 ? `[Object ${str.length} chars]` : data;
+        } catch { return '[Unserializable]'; }
+      }
+      
+      debug(msg, data) { this._log(LogLevel.DEBUG, msg, data); }
+      info(msg, data) { this._log(LogLevel.INFO, msg, data); }
+      warn(msg, data) { this._log(LogLevel.WARN, msg, data); }
+      error(msg, data) { this._log(LogLevel.ERROR, msg, data); }
+      
+      getBuffer() { return [...this.buffer]; }
+      getStats() { return { ...this.stats, bufferSize: this.buffer.length, level: Object.keys(LogLevel)[this.level] }; }
+      setLevel(l) { this.level = typeof l === 'string' ? LogLevel[l] : l; }
+    }
+    
+    const Logger = new ProductionLogger();
+    window.__agpSetLogLevel = (level) => Logger.setLevel(level);
+    window.__agpLogs = () => Logger.getBuffer();
+    
+    // --- RingBuffer: Buffer circulaire capacité fixe ---
+    class RingBuffer {
+      constructor(capacity = 1000) {
+        this.buffer = new Array(capacity);
+        this.capacity = capacity;
+        this.head = 0;
+        this.size = 0;
+      }
+      
+      push(item) {
+        this.buffer[(this.head + this.size) % this.capacity] = item;
+        if (this.size < this.capacity) this.size++;
+        else this.head = (this.head + 1) % this.capacity;
+      }
+      
+      getAll() {
+        const result = [];
+        for (let i = 0; i < this.size; i++) {
+          result.push(this.buffer[(this.head + i) % this.capacity]);
+        }
+        return result;
+      }
+      
+      getLast(n = 10) { return this.getAll().slice(-n); }
+      clear() { this.head = 0; this.size = 0; }
+      getSize() { return this.size; }
+      isFull() { return this.size === this.capacity; }
+    }
+    
+    // --- PersistentStorageManager: Protection contre l'éviction navigateur ---
+    const PersistentStorageManager = {
+      initialized: false,
+      isPersistent: false,
+      quota: 0,
+      usage: 0,
+      
+      async init() {
+        if (this.initialized) return this.isPersistent;
+        this.initialized = true;
+        
+        if (!navigator.storage?.persist) {
+          Logger.warn('Storage Persistence API non supportée');
+          return false;
+        }
+        
+        try {
+          this.isPersistent = await navigator.storage.persisted();
+          if (!this.isPersistent) {
+            this.isPersistent = await navigator.storage.persist();
+            Logger.info('Stockage persistant demandé:', this.isPersistent ? 'ACCORDÉ' : 'REFUSÉ');
+          }
+          await this.updateQuota();
+          return this.isPersistent;
+        } catch (e) {
+          Logger.error('Erreur stockage persistant:', e);
+          return false;
+        }
+      },
+      
+      async updateQuota() {
+        if (!navigator.storage?.estimate) return;
+        try {
+          const { quota, usage } = await navigator.storage.estimate();
+          this.quota = quota;
+          this.usage = usage;
+          const percentUsed = ((usage / quota) * 100).toFixed(1);
+          if (usage / quota > 0.8) {
+            Logger.warn(`⚠️ Stockage à ${percentUsed}% - nettoyage recommandé`);
+          }
+          return { quota, usage, percentUsed };
+        } catch (e) { return null; }
+      },
+      
+      getStatus() {
+        return {
+          isPersistent: this.isPersistent,
+          quota: Math.round(this.quota / 1024 / 1024) + ' MB',
+          usage: Math.round(this.usage / 1024 / 1024) + ' MB',
+          percentUsed: this.quota ? ((this.usage / this.quota) * 100).toFixed(1) + '%' : 'N/A'
+        };
+      }
+    };
+    
+    // --- CriticalDataManager: Write-Ahead Logging pour zéro perte ---
+    const CriticalDataManager = {
+      DB_NAME: 'AGP_CriticalData_DB',
+      DB_VERSION: 2,
+      db: null,
+      memoryCache: new Map(),
+      pendingSync: new Map(),
+      
+      async init() {
+        return new Promise((resolve, reject) => {
+          const request = indexedDB.open(this.DB_NAME, this.DB_VERSION);
+          
+          request.onerror = () => {
+            Logger.error('IndexedDB Critical init failed:', request.error);
+            reject(request.error);
+          };
+          
+          request.onsuccess = () => {
+            this.db = request.result;
+            Logger.info('✅ IndexedDB Critical Data initialisée');
+            resolve(this.db);
+          };
+          
+          request.onupgradeneeded = (event) => {
+            const db = event.target.result;
+            
+            // Store pour les temps de référence pilotes (~600 enregistrements)
+            if (!db.objectStoreNames.contains('referenceTimes')) {
+              const refStore = db.createObjectStore('referenceTimes', { keyPath: 'id' });
+              refStore.createIndex('byTeam', 'teamId');
+              refStore.createIndex('byPilot', 'pilotId');
+              refStore.createIndex('byCombo', ['pilotId', 'tireType', 'mixture']);
+            }
+            
+            // Store pour les plannings de stints
+            if (!db.objectStoreNames.contains('stintPlans')) {
+              const stintStore = db.createObjectStore('stintPlans', { keyPath: 'id' });
+              stintStore.createIndex('byTeam', 'teamId');
+              stintStore.createIndex('byTimestamp', 'timestamp');
+            }
+            
+            // Store pour les équipes complètes (backup)
+            if (!db.objectStoreNames.contains('teamBackups')) {
+              const teamStore = db.createObjectStore('teamBackups', { keyPath: 'teamName' });
+              teamStore.createIndex('byTimestamp', 'timestamp');
+            }
+            
+            // Write-Ahead Log pour synchronisation
+            if (!db.objectStoreNames.contains('writeAheadLog')) {
+              const walStore = db.createObjectStore('writeAheadLog', { keyPath: 'logId' });
+              walStore.createIndex('bySynced', 'synced');
+              walStore.createIndex('byTimestamp', 'timestamp');
+            }
+            
+            Logger.info('📊 Stores IndexedDB Critical créés');
+          };
+        });
+      },
+      
+      // Écriture critique avec Write-Ahead Log
+      async saveCritical(storeName, data, firebaseCallback = null) {
+        const logId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        const operation = { storeName, data, timestamp: Date.now() };
+        
+        // 1. Cache mémoire immédiat
+        this.memoryCache.set(logId, operation);
+        
+        // 2. Write-Ahead Log dans IndexedDB (durability: strict)
+        await this.writeToLog(logId, operation);
+        
+        // 3. Écriture dans le store principal
+        await this.writeToStore(storeName, data);
+        
+        // 4. Tentative Firebase si callback fourni
+        if (firebaseCallback) {
+          try {
+            await firebaseCallback(data);
+            await this.markLogSynced(logId);
+            return { success: true, synced: true, logId };
+          } catch (error) {
+            Logger.warn('Firebase sync échoué, données préservées localement:', error.message);
+            this.pendingSync.set(logId, operation);
+            return { success: true, synced: false, logId };
+          }
+        }
+        
+        return { success: true, synced: false, logId };
+      },
+      
+      async writeToLog(logId, operation) {
+        if (!this.db) return;
+        return new Promise((resolve, reject) => {
+          const tx = this.db.transaction(['writeAheadLog'], 'readwrite', { durability: 'strict' });
+          const store = tx.objectStore('writeAheadLog');
+          store.put({ logId, operation, synced: false, attempts: 0, timestamp: Date.now() });
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+        });
+      },
+      
+      async writeToStore(storeName, data) {
+        if (!this.db) return;
+        return new Promise((resolve, reject) => {
+          const tx = this.db.transaction([storeName], 'readwrite', { durability: 'strict' });
+          const store = tx.objectStore(storeName);
+          store.put({ ...data, savedAt: Date.now() });
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+        });
+      },
+      
+      async markLogSynced(logId) {
+        if (!this.db) return;
+        return new Promise((resolve) => {
+          const tx = this.db.transaction(['writeAheadLog'], 'readwrite');
+          const store = tx.objectStore('writeAheadLog');
+          const request = store.get(logId);
+          request.onsuccess = () => {
+            if (request.result) {
+              store.put({ ...request.result, synced: true, syncedAt: Date.now() });
+            }
+          };
+          tx.oncomplete = () => {
+            this.memoryCache.delete(logId);
+            this.pendingSync.delete(logId);
+            resolve();
+          };
+        });
+      },
+      
+      // Récupérer les données non synchronisées après redémarrage
+      async recoverUnsyncedData() {
+        if (!this.db) return [];
+        return new Promise((resolve) => {
+          const tx = this.db.transaction(['writeAheadLog'], 'readonly');
+          const store = tx.objectStore('writeAheadLog');
+          const index = store.index('bySynced');
+          const request = index.getAll(IDBKeyRange.only(false));
+          request.onsuccess = () => {
+            const unsynced = request.result || [];
+            Logger.info(`📤 ${unsynced.length} opérations non synchronisées trouvées`);
+            resolve(unsynced);
+          };
+          request.onerror = () => resolve([]);
+        });
+      },
+      
+      // Sauvegarder équipe complète (backup)
+      async saveTeamBackup(teamData) {
+        if (!this.db || !teamData?.name) return;
+        return new Promise((resolve, reject) => {
+          const tx = this.db.transaction(['teamBackups'], 'readwrite', { durability: 'strict' });
+          const store = tx.objectStore('teamBackups');
+          store.put({
+            teamName: teamData.name,
+            data: teamData,
+            timestamp: Date.now()
+          });
+          tx.oncomplete = () => {
+            Logger.debug(`💾 Backup équipe ${teamData.name} sauvegardé`);
+            resolve();
+          };
+          tx.onerror = () => reject(tx.error);
+        });
+      },
+      
+      // Récupérer backup équipe
+      async getTeamBackup(teamName) {
+        if (!this.db) return null;
+        return new Promise((resolve) => {
+          const tx = this.db.transaction(['teamBackups'], 'readonly');
+          const store = tx.objectStore('teamBackups');
+          const request = store.get(teamName);
+          request.onsuccess = () => resolve(request.result?.data || null);
+          request.onerror = () => resolve(null);
+        });
+      },
+      
+      // Récupérer tous les backups
+      async getAllBackups() {
+        if (!this.db) return [];
+        return new Promise((resolve) => {
+          const tx = this.db.transaction(['teamBackups'], 'readonly');
+          const store = tx.objectStore('teamBackups');
+          const request = store.getAll();
+          request.onsuccess = () => resolve(request.result || []);
+          request.onerror = () => resolve([]);
+        });
+      },
+      
+      getPendingCount() { return this.pendingSync.size; }
+    };
+    
+    // --- BackupManager: Export/Import JSON avec checksum ---
+    const BackupManager = {
+      VERSION: 2,
+      
+      async calculateChecksum(data) {
+        const json = JSON.stringify(data);
+        const buffer = new TextEncoder().encode(json);
+        const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+        return Array.from(new Uint8Array(hashBuffer))
+          .map(b => b.toString(16).padStart(2, '0')).join('');
+      },
+      
+      async exportAll(teams, chronoState, sessionId) {
+        const backup = {
+          version: this.VERSION,
+          timestamp: Date.now(),
+          exportDate: new Date().toISOString(),
+          sessionId: sessionId,
+          checksum: null,
+          data: {
+            teams: teams,
+            chrono: chronoState,
+            indexedDBBackups: await CriticalDataManager.getAllBackups()
+          }
+        };
+        
+        backup.checksum = await this.calculateChecksum(backup.data);
+        
+        const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `AGP-backup-${sessionId}-${new Date().toISOString().slice(0,16).replace(/[T:]/g, '-')}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        
+        Logger.info(`📦 Backup exporté: ${teams.length} équipes, ${backup.checksum.slice(0,8)}...`);
+        return { success: true, checksum: backup.checksum };
+      },
+      
+      async importBackup(file) {
+        try {
+          const text = await file.text();
+          const backup = JSON.parse(text);
+          
+          // Vérification version
+          if (!backup.version || backup.version < 1) {
+            throw new Error('Format de backup invalide ou trop ancien');
+          }
+          
+          // Vérification checksum
+          const calculatedChecksum = await this.calculateChecksum(backup.data);
+          if (calculatedChecksum !== backup.checksum) {
+            throw new Error('Fichier corrompu - checksum invalide');
+          }
+          
+          Logger.info(`📥 Backup importé: ${backup.data.teams?.length || 0} équipes, du ${backup.exportDate}`);
+          
+          return {
+            success: true,
+            data: backup.data,
+            meta: {
+              version: backup.version,
+              exportDate: backup.exportDate,
+              sessionId: backup.sessionId
+            }
+          };
+        } catch (error) {
+          Logger.error('Erreur import backup:', error.message);
+          return { success: false, error: error.message };
+        }
+      },
+      
+      // Auto-backup vers IndexedDB toutes les 5 minutes
+      startAutoBackup(getTeams, getChronoState) {
+        setInterval(async () => {
+          const teams = getTeams();
+          if (!teams?.length) return;
+          
+          for (const team of teams) {
+            await CriticalDataManager.saveTeamBackup(team);
+          }
+          Logger.debug(`🔄 Auto-backup: ${teams.length} équipes sauvegardées`);
+        }, 5 * 60 * 1000); // 5 minutes
+      }
+    };
+    
+    // --- SyncStatusTracker: Suivi état de synchronisation ---
+    const SyncStatusTracker = {
+      status: 'unknown', // 'synced', 'syncing', 'pending', 'offline', 'error'
+      lastSync: null,
+      pendingWrites: 0,
+      listeners: new Set(),
+      
+      setStatus(newStatus) {
+        this.status = newStatus;
+        if (newStatus === 'synced') this.lastSync = Date.now();
+        this.notify();
+      },
+      
+      incrementPending() {
+        this.pendingWrites++;
+        this.setStatus('syncing');
+      },
+      
+      decrementPending() {
+        this.pendingWrites = Math.max(0, this.pendingWrites - 1);
+        if (this.pendingWrites === 0) this.setStatus('synced');
+      },
+      
+      subscribe(callback) {
+        this.listeners.add(callback);
+        return () => this.listeners.delete(callback);
+      },
+      
+      notify() {
+        this.listeners.forEach(cb => cb(this.getState()));
+      },
+      
+      getState() {
+        return {
+          status: this.status,
+          lastSync: this.lastSync,
+          pendingWrites: this.pendingWrites,
+          indexedDBPending: CriticalDataManager.getPendingCount()
+        };
+      },
+      
+      getIcon() {
+        switch (this.status) {
+          case 'synced': return '🟢';
+          case 'syncing': return '🟡';
+          case 'pending': return '🟠';
+          case 'offline': return '🔴';
+          case 'error': return '⛔';
+          default: return '⚪';
+        }
+      }
+    };
+    
+    // Surveiller connexion réseau
+    window.addEventListener('online', () => SyncStatusTracker.setStatus('syncing'));
+    window.addEventListener('offline', () => SyncStatusTracker.setStatus('offline'));
+    
+    // --- ThrottledFirebaseWriter: Écriture throttlée avec adaptive throttling ---
+    class ThrottledFirebaseWriter {
+      constructor(options = {}) {
+        this.interval = options.interval || 2000;
+        this.minInterval = options.minInterval || 1000;
+        this.maxInterval = options.maxInterval || 5000;
+        this.pendingWrites = new Map();
+        this.lastWrite = 0;
+        this.timeoutId = null;
+        this.stats = { writes: 0, errors: 0, adaptations: 0 };
+      }
+      
+      write(key, data, firebaseCallback) {
+        this.pendingWrites.set(key, { data, callback: firebaseCallback, queuedAt: Date.now() });
+        const now = Date.now();
+        
+        if (now - this.lastWrite >= this.interval) {
+          this.flush();
+        } else if (!this.timeoutId) {
+          this.timeoutId = setTimeout(() => {
+            this.timeoutId = null;
+            this.flush();
+          }, this.interval - (now - this.lastWrite));
+        }
+      }
+      
+      async flush() {
+        if (this.pendingWrites.size === 0) return;
+        
+        const writes = Array.from(this.pendingWrites.entries());
+        this.pendingWrites.clear();
+        this.lastWrite = Date.now();
+        
+        SyncStatusTracker.incrementPending();
+        
+        for (const [key, { data, callback }] of writes) {
+          try {
+            const startTime = Date.now();
+            await callback(data);
+            const latency = Date.now() - startTime;
+            
+            // Adaptive throttling
+            if (latency > 200 && this.interval < this.maxInterval) {
+              this.interval = Math.min(this.maxInterval, this.interval * 1.2);
+              this.stats.adaptations++;
+            } else if (latency < 100 && this.interval > this.minInterval) {
+              this.interval = Math.max(this.minInterval, this.interval * 0.9);
+            }
+            
+            this.stats.writes++;
+          } catch (error) {
+            this.stats.errors++;
+            Logger.warn(`Firebase write failed for ${key}:`, error.message);
+          }
+        }
+        
+        SyncStatusTracker.decrementPending();
+      }
+      
+      destroy() {
+        if (this.timeoutId) clearTimeout(this.timeoutId);
+        this.flush();
+      }
+      
+      getStats() {
+        return {
+          ...this.stats,
+          currentInterval: this.interval,
+          pendingCount: this.pendingWrites.size
+        };
+      }
+    }
+    
+    // --- PerformanceManager: Initialisation globale ---
+    const PerformanceManager = {
+      telemetryHistory: new RingBuffer(500),
+      eventHistory: new RingBuffer(200),
+      lapHistory: new RingBuffer(1000),
+      firebaseWriter: new ThrottledFirebaseWriter({ interval: 2000 }),
+      initialized: false,
+      
+      async init() {
+        if (this.initialized) return;
+        
+        try {
+          // 1. Stockage persistant
+          await PersistentStorageManager.init();
+          
+          // 2. IndexedDB critique
+          await CriticalDataManager.init();
+          
+          // 3. Récupérer données non synchronisées
+          const unsynced = await CriticalDataManager.recoverUnsyncedData();
+          if (unsynced.length > 0) {
+            Logger.warn(`⚠️ ${unsynced.length} opérations non synchronisées à récupérer`);
+          }
+          
+          this.initialized = true;
+          Logger.info('✅ PerformanceManager initialisé');
+          
+        } catch (error) {
+          Logger.error('Erreur initialisation PerformanceManager:', error);
+        }
+      },
+      
+      getStats() {
+        return {
+          memory: MemoryMonitor.check(),
+          storage: PersistentStorageManager.getStatus(),
+          sync: SyncStatusTracker.getState(),
+          firebase: this.firebaseWriter.getStats(),
+          logger: Logger.getStats(),
+          buffers: {
+            telemetry: this.telemetryHistory.getSize(),
+            events: this.eventHistory.getSize(),
+            laps: this.lapHistory.getSize()
+          }
+        };
+      },
+      
+      cleanup() {
+        this.firebaseWriter.destroy();
+        Logger.info('🧹 Cleanup effectué');
+      }
+    };
+    
+    // Initialisation au chargement
+    window.AGP_Perf = PerformanceManager;
+    window.AGP_Backup = BackupManager;
+    window.AGP_Critical = CriticalDataManager;
+    window.AGP_Sync = SyncStatusTracker;
+    window.AGP_Logger = Logger;
+    
+    // Commandes console pour debugging
+    window.__agpStats = () => PerformanceManager.getStats();
+    window.__agpExport = (teams, chrono, session) => BackupManager.exportAll(teams, chrono, session);
+    window.__agpMemory = () => ({ ...MemoryMonitor, current: MemoryMonitor.check() });
+    window.__agpCleanup = () => PerformanceManager.cleanup();
+    
+    // Cleanup avant fermeture page
+    window.addEventListener('beforeunload', () => {
+      PerformanceManager.cleanup();
+    });
+    
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // SYSTÈME D'ASSOCIATION PILOTES SimHub ↔ Équipage v33
+    // ═══════════════════════════════════════════════════════════════════════════════
+    
+    // Statuts possibles pour un pilote
+    const PILOT_STATUS = {
+      ON_TRACK: { id: 'on_track', icon: '🟢', label: 'EN PISTE', color: '#3fb950' },
+      IN_PIT: { id: 'in_pit', icon: '🟡', label: 'AU STAND', color: '#f0883e' },
+      STANDBY: { id: 'standby', icon: '🔵', label: 'SECOURS', color: '#58a6ff' },
+      OFFLINE: { id: 'offline', icon: '⚫', label: 'OFFLINE', color: '#7d8590' },
+      SPECTATOR: { id: 'spectator', icon: '👁️', label: 'SPECTATEUR', color: '#a371f7' }
+    };
+    
+    const DriverMatchingSystem = {
+      // Cache des associations pilote ↔ voiture
+      associations: new Map(), // pilotId → carNumber
+      reverseAssociations: new Map(), // carNumber → pilotId
+      pilotStatuses: new Map(), // pilotId → status
+      lastSeen: new Map(), // pilotId → timestamp
+      spectatorDrivers: new Set(), // Pilotes connectés en spectateur (prêts pour relève)
+      
+      // Normaliser un nom pour comparaison (ignore accents, casse, espaces)
+      normalizeName(name) {
+        if (!name) return '';
+        return name
+          .toLowerCase()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '') // Supprimer accents
+          .replace(/[^a-z0-9]/g, '') // Garder que lettres et chiffres
+          .trim();
+      },
+      
+      // Calculer score de similarité entre deux noms (0-100)
+      calculateSimilarity(name1, name2) {
+        const n1 = this.normalizeName(name1);
+        const n2 = this.normalizeName(name2);
+        
+        if (!n1 || !n2) return 0;
+        if (n1 === n2) return 100;
+        
+        // Match partiel (un contient l'autre)
+        if (n1.includes(n2) || n2.includes(n1)) return 80;
+        
+        // Match début (prénom)
+        if (n1.startsWith(n2.slice(0, 3)) || n2.startsWith(n1.slice(0, 3))) return 60;
+        
+        // Levenshtein simplifié pour les cas proches
+        const maxLen = Math.max(n1.length, n2.length);
+        let matches = 0;
+        for (let i = 0; i < Math.min(n1.length, n2.length); i++) {
+          if (n1[i] === n2[i]) matches++;
+        }
+        return Math.round((matches / maxLen) * 100);
+      },
+      
+      // Trouver le meilleur match pour un nom de pilote SimHub parmi les pilotes de l'équipe
+      findBestMatch(simhubDriverName, teamPilots) {
+        if (!simhubDriverName || !teamPilots?.length) return null;
+        
+        let bestMatch = null;
+        let bestScore = 0;
+        
+        for (const pilot of teamPilots) {
+          if (!pilot.name || pilot.active === false) continue;
+          
+          const score = this.calculateSimilarity(simhubDriverName, pilot.name);
+          
+          // Aussi checker le badge si défini
+          const badgeScore = pilot.badge ? this.calculateSimilarity(simhubDriverName, pilot.badge) : 0;
+          const finalScore = Math.max(score, badgeScore);
+          
+          if (finalScore > bestScore && finalScore >= 50) { // Seuil minimum de 50%
+            bestScore = finalScore;
+            bestMatch = { pilot, score: finalScore };
+          }
+        }
+        
+        return bestMatch;
+      },
+      
+      // Mettre à jour les associations depuis les données SimHub
+      updateFromTelemetry(telemetryData, teams) {
+        if (!telemetryData || !teams) return;
+        
+        const now = Date.now();
+        const activeDrivers = new Set(); // Pilotes actuellement actifs
+        
+        // Parcourir toutes les voitures avec données récentes
+        Object.entries(telemetryData).forEach(([carNum, carData]) => {
+          if (!carData || !carData.driverName) return;
+          if (carData.timestamp && (now - carData.timestamp) > 15000) return; // Données trop vieilles
+          
+          const driverName = carData.driverName;
+          const isInPit = carData.isInPit === 1;
+          const isSpectator = carData.isSpectator === true; // Si le plugin envoie cette info
+          
+          // Chercher dans toutes les équipes
+          for (const team of teams) {
+            const match = this.findBestMatch(driverName, team.pilots);
+            
+            if (match && match.score >= 50) {
+              const pilotId = match.pilot.id;
+              
+              // Enregistrer l'association
+              this.associations.set(pilotId, carNum);
+              this.reverseAssociations.set(carNum, pilotId);
+              this.lastSeen.set(pilotId, now);
+              activeDrivers.add(pilotId);
+              
+              // Déterminer le statut
+              let status;
+              if (isSpectator) {
+                status = PILOT_STATUS.SPECTATOR;
+                this.spectatorDrivers.add(pilotId);
+              } else if (isInPit) {
+                status = PILOT_STATUS.IN_PIT;
+                this.spectatorDrivers.delete(pilotId);
+              } else {
+                status = PILOT_STATUS.ON_TRACK;
+                this.spectatorDrivers.delete(pilotId);
+              }
+              
+              this.pilotStatuses.set(pilotId, {
+                ...status,
+                carNumber: carNum,
+                driverName: driverName,
+                teamName: team.name,
+                matchScore: match.score,
+                lastUpdate: now,
+                isInPit,
+                speed: carData.speedKmh || carData.speed || 0,
+                currentLap: carData.currentLap
+              });
+              
+              break; // Trouvé, pas besoin de chercher dans les autres équipes
+            }
+          }
+        });
+        
+        // Mettre à jour les pilotes non actifs (OFFLINE ou STANDBY)
+        for (const team of teams) {
+          for (const pilot of team.pilots) {
+            if (!pilot.id || pilot.active === false) continue;
+            
+            if (!activeDrivers.has(pilot.id)) {
+              const lastSeenTime = this.lastSeen.get(pilot.id);
+              const wasRecentlyActive = lastSeenTime && (now - lastSeenTime) < 30000;
+              
+              // Si vu récemment en spectateur, c'est un pilote de secours
+              if (this.spectatorDrivers.has(pilot.id)) {
+                this.pilotStatuses.set(pilot.id, {
+                  ...PILOT_STATUS.STANDBY,
+                  teamName: team.name,
+                  lastUpdate: now,
+                  note: 'Prêt pour relève au stand'
+                });
+              } else if (wasRecentlyActive) {
+                // Récemment actif mais plus de données → probablement au stand
+                this.pilotStatuses.set(pilot.id, {
+                  ...PILOT_STATUS.IN_PIT,
+                  teamName: team.name,
+                  lastUpdate: now
+                });
+              } else {
+                // Pas de données récentes → offline
+                this.pilotStatuses.set(pilot.id, {
+                  ...PILOT_STATUS.OFFLINE,
+                  teamName: team.name,
+                  lastUpdate: now
+                });
+              }
+            }
+          }
+        }
+      },
+      
+      // Obtenir le statut d'un pilote
+      getPilotStatus(pilotId) {
+        return this.pilotStatuses.get(pilotId) || { ...PILOT_STATUS.OFFLINE };
+      },
+      
+      // Obtenir tous les statuts d'une équipe
+      getTeamStatuses(teamPilots) {
+        if (!teamPilots) return [];
+        return teamPilots.map(p => ({
+          ...p,
+          connectionStatus: this.getPilotStatus(p.id)
+        }));
+      },
+      
+      // Obtenir le pilote actuellement en piste pour une équipe
+      getOnTrackPilot(teamPilots) {
+        if (!teamPilots) return null;
+        for (const pilot of teamPilots) {
+          const status = this.pilotStatuses.get(pilot.id);
+          if (status?.id === 'on_track') {
+            return { ...pilot, status };
+          }
+        }
+        return null;
+      },
+      
+      // Obtenir les pilotes en standby (prêts pour relève)
+      getStandbyPilots(teamPilots) {
+        if (!teamPilots) return [];
+        return teamPilots.filter(pilot => {
+          const status = this.pilotStatuses.get(pilot.id);
+          return status?.id === 'standby' || status?.id === 'in_pit';
+        }).map(p => ({ ...p, status: this.pilotStatuses.get(p.id) }));
+      },
+      
+      // Marquer un pilote comme pilote de secours (connecté en spectateur)
+      markAsStandby(pilotId) {
+        this.spectatorDrivers.add(pilotId);
+        const currentStatus = this.pilotStatuses.get(pilotId) || {};
+        this.pilotStatuses.set(pilotId, {
+          ...PILOT_STATUS.STANDBY,
+          ...currentStatus,
+          lastUpdate: Date.now(),
+          note: 'Prêt pour relève au stand'
+        });
+      },
+      
+      // Reset toutes les associations
+      reset() {
+        this.associations.clear();
+        this.reverseAssociations.clear();
+        this.pilotStatuses.clear();
+        this.lastSeen.clear();
+        this.spectatorDrivers.clear();
+      },
+      
+      // Stats pour debugging
+      getStats() {
+        return {
+          associationsCount: this.associations.size,
+          statuses: Object.fromEntries(this.pilotStatuses),
+          spectatorCount: this.spectatorDrivers.size
+        };
+      }
+    };
+    
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // CALCUL TEMPS FALLBACK - Pire temps du combo si pilote non connecté
+    // ═══════════════════════════════════════════════════════════════════════════════
+    
+    const FallbackTimeCalculator = {
+      // Obtenir le pire temps d'un combo pour une équipe
+      getWorstComboTime(teamPilots, comboKey, pilotComboTimes, defaultTime = '1:50.000') {
+        if (!teamPilots?.length || !pilotComboTimes) return defaultTime;
+        
+        const activePilots = teamPilots.filter(p => p.active !== false && p.name);
+        if (activePilots.length === 0) return defaultTime;
+        
+        let worstTime = null;
+        let worstTimeSec = 0;
+        
+        for (const pilot of activePilots) {
+          const key = pilot.id + '_' + comboKey;
+          const timeStr = pilotComboTimes[key];
+          
+          if (timeStr) {
+            const timeSec = parseTime(timeStr);
+            if (timeSec > worstTimeSec) {
+              worstTimeSec = timeSec;
+              worstTime = timeStr;
+            }
+          }
+        }
+        
+        return worstTime || defaultTime;
+      },
+      
+      // Obtenir le meilleur temps d'un combo pour une équipe
+      getBestComboTime(teamPilots, comboKey, pilotComboTimes, defaultTime = '1:48.000') {
+        if (!teamPilots?.length || !pilotComboTimes) return defaultTime;
+        
+        const activePilots = teamPilots.filter(p => p.active !== false && p.name);
+        if (activePilots.length === 0) return defaultTime;
+        
+        let bestTime = null;
+        let bestTimeSec = Infinity;
+        
+        for (const pilot of activePilots) {
+          const key = pilot.id + '_' + comboKey;
+          const timeStr = pilotComboTimes[key];
+          
+          if (timeStr) {
+            const timeSec = parseTime(timeStr);
+            if (timeSec < bestTimeSec) {
+              bestTimeSec = timeSec;
+              bestTime = timeStr;
+            }
+          }
+        }
+        
+        return bestTime || defaultTime;
+      },
+      
+      // Obtenir le temps approprié pour un pilote selon son statut de connexion
+      getPilotTimeWithFallback(pilot, comboKey, pilotComboTimes, teamPilots, defaultTime = '1:48.500') {
+        if (!pilot?.id) return defaultTime;
+        
+        // Vérifier si le pilote est connecté
+        const status = DriverMatchingSystem.getPilotStatus(pilot.id);
+        const isConnected = status.id === 'on_track' || status.id === 'in_pit';
+        
+        // Temps personnel du pilote
+        const personalKey = pilot.id + '_' + comboKey;
+        const personalTime = pilotComboTimes?.[personalKey];
+        
+        if (personalTime && isConnected) {
+          // Pilote connecté avec temps personnel → utiliser son temps
+          return personalTime;
+        } else if (personalTime && !isConnected) {
+          // Pilote NON connecté mais a un temps → utiliser le PIRE temps de l'équipe
+          // Car s'il n'est pas là, on ne sait pas qui le remplacera
+          return this.getWorstComboTime(teamPilots, comboKey, pilotComboTimes, personalTime);
+        } else {
+          // Pas de temps personnel → utiliser le pire temps de l'équipe
+          return this.getWorstComboTime(teamPilots, comboKey, pilotComboTimes, defaultTime);
+        }
+      },
+      
+      // Vérifier si un pilote a des temps référence pour un combo
+      hasPilotTime(pilotId, comboKey, pilotComboTimes) {
+        if (!pilotId || !pilotComboTimes) return false;
+        const key = pilotId + '_' + comboKey;
+        return !!pilotComboTimes[key];
+      }
+    };
+    
+    // Exposer globalement
+    window.AGP_DriverMatching = DriverMatchingSystem;
+    window.AGP_FallbackTime = FallbackTimeCalculator;
+    window.PILOT_STATUS = PILOT_STATUS;
   <script>
 
     // ═══════════════════════════════════════════════════════════════════════════════
@@ -3275,9 +4235,29 @@
     };
     
     // Obtenir le temps effectif pour UN pilote spécifique (avec fallback sur référence = pire temps équipe)
-    const getPilotEffectiveMs = (pilotId, tireId, mixId, settings, pilots) => {
+    const getPilotEffectiveMs = (pilotId, tireId, mixId, settings, pilots, useConnectionStatus = false) => {
       const comboKey = tireId + '_' + mixId;
       const pilotKey = pilotId + '_' + comboKey;
+      
+      // v33: Si on prend en compte le statut de connexion
+      if (useConnectionStatus && window.AGP_DriverMatching) {
+        const status = window.AGP_DriverMatching.getPilotStatus(pilotId);
+        const isConnected = status?.id === 'on_track' || status?.id === 'in_pit';
+        
+        // Si pilote non connecté → forcer le pire temps de l'équipe
+        if (!isConnected && pilots && settings?.pilotComboTimes) {
+          const activePilots = pilots.filter(p => p.active !== false);
+          const validTimes = activePilots
+            .map(p => settings.pilotComboTimes[p.id + '_' + comboKey])
+            .filter(t => t)
+            .map(t => parseTimeToMs(t))
+            .filter(ms => ms > 0);
+          
+          if (validTimes.length > 0) {
+            return Math.max(...validTimes); // Pire temps car pilote absent
+          }
+        }
+      }
       
       // Chercher le temps du pilote
       const pilotTimeStr = settings?.pilotComboTimes?.[pilotKey];
@@ -3305,9 +4285,29 @@
     };
     
     // Obtenir la conso effective pour UN pilote spécifique (avec fallback sur référence = pire conso équipe)
-    const getPilotEffectiveCons = (pilotId, tireId, mixId, settings, pilots) => {
+    const getPilotEffectiveCons = (pilotId, tireId, mixId, settings, pilots, useConnectionStatus = false) => {
       const comboKey = tireId + '_' + mixId;
       const pilotKey = pilotId + '_' + comboKey;
+      
+      // v33: Si on prend en compte le statut de connexion
+      if (useConnectionStatus && window.AGP_DriverMatching) {
+        const status = window.AGP_DriverMatching.getPilotStatus(pilotId);
+        const isConnected = status?.id === 'on_track' || status?.id === 'in_pit';
+        
+        // Si pilote non connecté → forcer la pire conso de l'équipe
+        if (!isConnected && pilots && settings?.pilotComboCons) {
+          const activePilots = pilots.filter(p => p.active !== false);
+          const validCons = activePilots
+            .map(p => settings.pilotComboCons[p.id + '_' + comboKey])
+            .filter(c => c)
+            .map(c => parseFloat(c))
+            .filter(cons => cons > 0);
+          
+          if (validCons.length > 0) {
+            return Math.max(...validCons); // Pire conso car pilote absent
+          }
+        }
+      }
       
       // Chercher la conso du pilote
       const pilotConsStr = settings?.pilotComboCons?.[pilotKey];
@@ -3383,10 +4383,13 @@
       const strategies = [];
       const activeCombos = settings?.activeCombos || [];
       const hasActiveFilter = activeCombos.length > 0;
+      // v33 FIX: Le combo SÉLECTIONNÉ doit TOUJOURS être calculé pour afficher les bonnes stats
+      const selectedComboKey = (settings?.tireType || 'medium') + '_' + (settings?.defaultMixture || 'race');
       TIRES.forEach(tire => {
         MIXTURES.forEach(mix => {
           const comboKey = tire.id + '_' + mix.id;
-          if (hasActiveFilter && !activeCombos.includes(comboKey)) return;
+          // Inclure si: pas de filtre OU dans activeCombos OU c'est le combo sélectionné
+          if (hasActiveFilter && !activeCombos.includes(comboKey) && comboKey !== selectedComboKey) return;
           
           // Calcul du temps: moyenne des pilotes si dispo, sinon comboTimes
           let temps_tour_ms = null;
@@ -3458,18 +4461,9 @@
       const defaultTireChange = settings.defaultTireChange !== false;
       const tireChangeEvery = parseInt(settings.tireChangeEvery) || 1;
       
-      // Déterminer le combo actif (meilleure stratégie)
-      const strategies = compareStrategies(settings, pilots);
-      const bestStrat = strategies[0];
-      
-      let tireType, mixture;
-      if (bestStrat) {
-        tireType = bestStrat.tire.id;
-        mixture = bestStrat.mixture.id;
-      } else {
-        tireType = settings.tireType || 'medium';
-        mixture = settings.defaultMixture || 'race';
-      }
+      // v33 FIX: Utiliser les paramètres CONFIGURÉS par l'utilisateur, pas la "meilleure stratégie"
+      const tireType = settings.tireType || 'medium';
+      const mixture = settings.defaultMixture || 'race';
       
       const pitTime = parseInt(settings.pitStopSec) || 45;
       const pitLaneTime = parseInt(settings.pitLaneTime) || 30;
@@ -3658,10 +4652,21 @@
       return <span className="mono" style={{color:'var(--blue)',fontWeight:'600',fontSize:'14px'}}>{time}</span>;
     };
 
-    const SyncStatus = ({ status, onRefresh, connectedUsers }) => {
+    const SyncStatus = ({ status, onRefresh, connectedUsers, persistenceStatus }) => {
       const statusConfig = { connected: { class: 'sync-ok', icon: '🟢', text: 'Firebase OK' + (connectedUsers > 1 ? ' (' + connectedUsers + ')' : '') }, syncing: { class: 'sync-loading', icon: '🔄', text: 'Sync...' }, error: { class: 'sync-error', icon: '🔴', text: 'Erreur' }, offline: { class: 'sync-error', icon: '🔴', text: 'Local' }, noconfig: { class: 'sync-error', icon: '⚙️', text: 'Config' } };
       const cfg = statusConfig[status] || statusConfig.offline;
-      return (<div style={{display:'flex',alignItems:'center',gap:'4px'}}><div className={'sync-indicator ' + cfg.class}><span style={{display:'inline-block'}}>{cfg.icon}</span><span>{cfg.text}</span></div><button className="btn btn-ghost btn-sm" onClick={onRefresh} disabled={status === 'syncing'} title="Actualiser">🔄</button></div>);
+      const pendingCount = persistenceStatus?.pending || 0;
+      const storageOk = persistenceStatus?.initialized && persistenceStatus?.storage?.isPersistent;
+      const persistIcon = storageOk ? '💾' : '⚠️';
+      const persistTitle = storageOk 
+        ? `Stockage persistant: ${persistenceStatus.storage?.usage || 'OK'}\n${pendingCount > 0 ? pendingCount + ' ops en attente' : 'Tout synchronisé'}`
+        : 'Stockage non persistant - données peuvent être effacées';
+      return (<div style={{display:'flex',alignItems:'center',gap:'4px'}}>
+        <div className={'sync-indicator ' + cfg.class}><span style={{display:'inline-block'}}>{cfg.icon}</span><span>{cfg.text}</span></div>
+        <span title={persistTitle} style={{cursor:'help',opacity: storageOk ? 1 : 0.6}}>{persistIcon}</span>
+        {pendingCount > 0 && <span style={{fontSize:'10px',color:'var(--orange)',fontWeight:'bold'}}>{pendingCount}⏳</span>}
+        <button className="btn btn-ghost btn-sm" onClick={onRefresh} disabled={status === 'syncing'} title="Actualiser">🔄</button>
+      </div>);
     };
     
     // THEME SELECTOR with team themes
@@ -3900,7 +4905,9 @@
           const currentPilot = t.pilots.find(p => p.id === currentStint?.pilotId);
           const backupPilot = t.pilots.find(p => p.id === currentStint?.backupId);
           const strategies = compareStrategies(t.settings, t.pilots);
-          const bestStrat = strategies[0];
+          // v33 FIX: Utiliser le combo sélectionné pour les stats
+          const selectedComboKey = (t.settings?.tireType || 'medium') + '_' + (t.settings?.defaultMixture || 'race');
+          const bestStrat = strategies.find(s => s.comboKey === selectedComboKey) || strategies[0];
           // Calculer tours basés sur stints COMPLÉTÉS par l'équipe
           const stints = t.stints || [];
           const completedLaps = stints.filter(s => s.completed).reduce((sum, s) => sum + (parseInt(s.laps) || 0), 0);
@@ -5156,7 +6163,7 @@
     };
 
     // ========== LIVE TELEMETRY VIEW ==========
-    const LiveView = ({ raceConfig, pilots, onImportData, onSyncChrono, onStintUpdate, onAddIncident, onAutoImportChrono, collectedData: externalCollectedData, setCollectedData: externalSetCollectedData, pilotStatus: externalPilotStatus, setPilotStatus: externalSetPilotStatus, chronoState: externalChronoState, sessionId, uxSettings = {}, raceMode = 'training', teamCarNumber = '05' }) => {
+    const LiveView = ({ raceConfig, pilots, onImportData, onSyncChrono, onStintUpdate, onAddIncident, onAutoImportChrono, collectedData: externalCollectedData, setCollectedData: externalSetCollectedData, pilotStatus: externalPilotStatus, setPilotStatus: externalSetPilotStatus, chronoState: externalChronoState, sessionId, uxSettings = {}, raceMode = 'training' }) => {
       // ═══════════════════════════════════════════════════════════════════
       // LIVE VIEW V2 - 2 PAGES COMPLÈTES: ÉQUIPE + COURSE
       // ═══════════════════════════════════════════════════════════════════
@@ -5175,16 +6182,8 @@
       
       // États
       const [activePage, setActivePage] = useState('equipe');
-      const [selectedTeam, setSelectedTeam] = useState(teamCarNumber);
+      const [selectedTeam, setSelectedTeam] = useState('02');
       const [telemetryData, setTelemetryData] = useState({});
-      
-      // ═══ v32.3 FIX: Synchroniser selectedTeam avec le numéro de voiture de l'équipe ═══
-      useEffect(() => {
-        if (teamCarNumber && teamCarNumber !== selectedTeam) {
-          console.log('🔄 Mise à jour selectedTeam:', teamCarNumber);
-          setSelectedTeam(teamCarNumber);
-        }
-      }, [teamCarNumber]);
       const [isConnected, setIsConnected] = useState(false);
       const [simhubConnected, setSimhubConnected] = useState(false);
       const [lastSimhubUpdate, setLastSimhubUpdate] = useState(null);
@@ -5202,8 +6201,6 @@
       const [raceEvents, setRaceEvents] = useState([]); // Log des événements course
       const [fuelAlerts, setFuelAlerts] = useState({}); // Alertes carburant par voiture
       const prevFlagRef = useRef('GREEN');
-      const lastFlagEventRef = useRef(0); // v32.3: Timestamp du dernier événement drapeau (anti-spam)
-      const globalBestLapRef = useRef({ time: 999, carNum: null, driver: null }); // v32.3: Meilleur tour global
       const seenEventsRef = useRef(new Set()); // S4: Anti-duplicate events
       const prevHeartbeatRef = useRef({}); // S2: Heartbeat tracking par voiture
       const heartbeatStaleCountRef = useRef({}); // S2: Compteur de heartbeat identiques
@@ -5632,7 +6629,7 @@
           totalLaps: raceConfig.totalLaps || 500,
           fuelCapacity: raceConfig.tankCapacity || 70,
           avgConsumption: raceConfig.avgFuelConsumption || 3.1,
-          pitLossTime: raceConfig.pitLaneTime + raceConfig.pitStopTime + raceConfig.tireChangeTime || 120,
+          pitLossTime: (raceConfig.pitLaneTime || 30) + (raceConfig.pitStopSec || 45) + (raceConfig.tireChangeSec || 25),
           avgLapTime: raceConfig.avgLapTime || 108,
           drivers: activePilots.map(p => ({ id: p.id, name: p.name })),
           maxDriverStint: 60 // 60 minutes max par défaut
@@ -5710,7 +6707,7 @@
         
         const raceParams = {
           tankCapacity: raceConfig.tankCapacity || 70,
-          pitLossTime: raceConfig.pitLaneTime + raceConfig.pitStopTime + raceConfig.tireChangeTime || 120,
+          pitLossTime: (raceConfig.pitLaneTime || 30) + (raceConfig.pitStopSec || 45) + (raceConfig.tireChangeSec || 25),
           maxDriverStint: 60
         };
         
@@ -5939,9 +6936,9 @@
               });
               
               // ═══ CALCUL OPPORTUNITÉ PIT FCY ═══
-              const pitLaneTime = raceConfig?.pitLaneTime || 45;
-              const pitStopTime = raceConfig?.pitStopTime || 30;
-              const tireChangeTime = raceConfig?.tireChangeTime || 25;
+              const pitLaneTime = raceConfig?.pitLaneTime || 30;
+              const pitStopTime = raceConfig?.pitStopSec || 45;
+              const tireChangeTime = raceConfig?.tireChangeSec || 25;
               const totalPitTime = pitLaneTime + pitStopTime + tireChangeTime;
               
               // En FCY on roule à ~60 km/h, donc le temps perdu au pit est réduit
@@ -6263,77 +7260,32 @@
                 
                 // === TEMPS AU TOUR ===
                 lastLapTimeSec: r.lastLapTimeSec ?? r.lastLapSec ?? 0,
-                // lastLapTime formaté pour affichage (MM:SS.mmm)
-                lastLapTime: (() => {
-                  const sec = r.lastLapTimeSec ?? r.lastLapSec ?? 0;
-                  if (sec > 0) {
-                    const mins = Math.floor(sec / 60);
-                    const secs = (sec % 60).toFixed(3).padStart(6, '0');
-                    return `${mins}:${secs}`;
-                  }
-                  return r.lastLapTime ?? '--:--.---';
-                })(),
                 bestLapTimeSec: r.bestLapTimeSec ?? r.bestLapSec ?? 0,
                 currentLapTimeSec: r.currentLapTimeSec ?? r.currentLapSec ?? 0,
                 
                 // === SECTEURS (depuis plugin sectors object) ===
-                // Note: rFactor2 ne fournit que S1 et S2, S3 est calculé
                 sector1: r.sectors?.sector1Last ?? r.sector1 ?? null,
                 sector2: r.sectors?.sector2Last ?? r.sector2 ?? null,
-                // S3 calculé = temps au tour - S1 - S2 (si tous disponibles)
-                sector3: (() => {
-                  const s1 = r.sectors?.sector1Last ?? r.sector1;
-                  const s2 = r.sectors?.sector2Last ?? r.sector2;
-                  const lapTime = r.lastLapTimeSec ?? r.lastLapSec;
-                  if (s1 > 0 && s2 > 0 && lapTime > 0) {
-                    return Math.max(0, lapTime - s1 - s2);
-                  }
-                  return null;
-                })(),
                 bestSector1: r.sectors?.sector1 ?? r.bestSector1 ?? null,
                 bestSector2: r.sectors?.sector2 ?? r.bestSector2 ?? null,
-                // Best S3 calculé depuis best lap
-                bestSector3: (() => {
-                  const s1 = r.sectors?.sector1 ?? r.bestSector1;
-                  const s2 = r.sectors?.sector2 ?? r.bestSector2;
-                  const bestLap = r.bestLapTimeSec ?? r.bestLapSec;
-                  if (s1 > 0 && s2 > 0 && bestLap > 0) {
-                    return Math.max(0, bestLap - s1 - s2);
-                  }
-                  return null;
-                })(),
                 currentSector: r.sectors?.current ?? r.currentSector ?? 0,
                 
                 // === ÉCARTS (gap ahead/behind) ===
-                // Note: valeur 0 signifie "pas de voiture" (1er ou dernier), garder null pour afficher "--"
-                gapAhead: (r.gaps?.ahead ?? r.gapAhead) || null,
-                gapBehind: (r.gaps?.behind ?? r.gapBehind) || null,
+                gapAhead: r.gaps?.ahead ?? r.gapAhead ?? null,
+                gapBehind: r.gaps?.behind ?? r.gapBehind ?? null,
                 carAhead: r.gaps?.carAhead ?? r.carAhead ?? null,
                 carBehind: r.gaps?.carBehind ?? r.carBehind ?? null
               };
             });
             
-            // DEBUG: Log données secteurs et gaps pour la voiture sélectionnée
-            const debugCar = data[selectedTeam];
-            if (debugCar && debugCar.carNumber) {
-              console.log(`📊 [${debugCar.carNumber}] Sectors:`, {
-                sector1: debugCar.sector1,
-                sector2: debugCar.sector2,
-                sector3: debugCar.sector3,
-                bestS1: debugCar.bestSector1,
-                bestS2: debugCar.bestSector2,
-                bestS3: debugCar.bestSector3,
-                raw_sectors: rawData[selectedTeam]?.sectors
-              });
-              console.log(`📊 [${debugCar.carNumber}] Gaps:`, {
-                ahead: debugCar.gapAhead,
-                behind: debugCar.gapBehind,
-                raw_gaps: rawData[selectedTeam]?.gaps
-              });
-            }
-            
             setTelemetryData(data);
             setIsConnected(true);
+            
+            // ═══ v33: MISE À JOUR MATCHING PILOTES SimHub ↔ Équipage ═══
+            if (window.AGP_DriverMatching && pilots) {
+              // Créer une "fake" team avec les pilotes actuels pour le matching
+              window.AGP_DriverMatching.updateFromTelemetry(data, [{ name: 'current', pilots: pilots }]);
+            }
             
             // Vérifier si SimHub envoie des données (plugin actif)
             // v32.1: Timeout réduit à 8s pour détection plus rapide des déconnexions
@@ -6380,86 +7332,24 @@
                   }
                   return newSorted;
                 });
-                
-                // ═══ v32.3: TRACKING MEILLEUR TOUR GLOBAL depuis allVehicles ═══
-                car.allVehicles.forEach(v => {
-                  if (v.bestLapTime && !v.bestLapTime.includes('--') && v.bestLapTime !== '0:00.000') {
-                    // Parser le temps "1:38.190" en secondes
-                    const parts = v.bestLapTime.match(/(\d+):(\d+)\.(\d+)/);
-                    if (parts) {
-                      const bestSec = parseInt(parts[1]) * 60 + parseInt(parts[2]) + parseInt(parts[3]) / 1000;
-                      if (bestSec > 30 && bestSec < 300 && bestSec < globalBestLapRef.current.time) {
-                        const prevBest = globalBestLapRef.current;
-                        const carNum = v.carNumber || '';
-                        const driver = v.driverName || `#${carNum}`;
-                        globalBestLapRef.current = { time: bestSec, carNum, driver };
-                        
-                        // Créer événement seulement si amélioration significative (>0.1s) et pas premier tour
-                        if (prevBest.time < 900 && (prevBest.time - bestSec) > 0.1) {
-                          const time = new Date().toLocaleTimeString('fr-FR', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
-                          const isAGP = ['02', '05', '31', '99', '002', '005', '031', '099'].includes(String(carNum));
-                          setRaceEvents(prev => [{
-                            type: 'best',
-                            icon: '🏆',
-                            message: `${isAGP ? '⭐ ' : ''}RECORD: #${carNum} ${driver} - ${v.bestLapTime}`,
-                            time,
-                            timestamp: Date.now(),
-                            carNum
-                          }, ...prev].slice(0, 100));
-                        }
-                      }
-                    }
-                  }
-                });
               }
               
-              // ═══ v32: EXTRACTION DRAPEAUX (v32.3: anti-spam 30s) ═══
+              // ═══ v32: EXTRACTION DRAPEAUX ═══
               if (car && car.flags && car.flags.status) {
                 const newFlag = car.flags.status;
-                const now = Date.now();
-                // v32.3: Anti-spam - min 30 sec entre deux événements du même type
-                const timeSinceLastFlag = now - lastFlagEventRef.current;
-                if (newFlag !== prevFlagRef.current && timeSinceLastFlag > 30000) {
+                if (newFlag !== prevFlagRef.current) {
                   setFlagStatus(newFlag);
                   if (newFlag !== 'GREEN' && newFlag !== 'NONE') {
                     const time = new Date().toLocaleTimeString('fr-FR', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
                     setRaceEvents(prev => [{
                       type: 'flag',
-                      icon: newFlag === 'YELLOW' ? '🟡' : newFlag === 'BLUE' ? '🔵' : newFlag === 'RED' ? '🔴' : newFlag === 'WHITE' ? '⚪' : newFlag === 'CHECKERED' ? '🏁' : '🚩',
+                      icon: newFlag === 'YELLOW' ? '🟡' : newFlag === 'BLUE' ? '🔵' : newFlag === 'RED' ? '🔴' : '🚩',
                       message: `Drapeau ${newFlag}`,
                       time,
-                      timestamp: now
+                      timestamp: Date.now()
                     }, ...prev].slice(0, 100));
-                    lastFlagEventRef.current = now;
                   }
                   prevFlagRef.current = newFlag;
-                }
-              }
-              
-              // ═══ v32.3: TRACKING MEILLEUR TOUR GLOBAL ═══
-              if (car && car.bestLapTimeSec && car.bestLapTimeSec > 0 && car.bestLapTimeSec < 300) {
-                const bestSec = car.bestLapTimeSec;
-                const carNum = car.carNumber || '';
-                const driver = car.driverName || `#${carNum}`;
-                
-                if (bestSec < globalBestLapRef.current.time) {
-                  const prevBest = globalBestLapRef.current;
-                  globalBestLapRef.current = { time: bestSec, carNum, driver };
-                  
-                  // Créer événement seulement si c'est une vraie amélioration (>0.1s)
-                  if (prevBest.time < 900 && (prevBest.time - bestSec) > 0.1) {
-                    const time = new Date().toLocaleTimeString('fr-FR', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
-                    const lapStr = Math.floor(bestSec / 60) + ':' + (bestSec % 60).toFixed(3).padStart(6, '0');
-                    const isAGP = ['02', '05', '31', '99', '002', '005', '031', '099'].includes(String(carNum));
-                    setRaceEvents(prev => [{
-                      type: 'best',
-                      icon: '🏆',
-                      message: `${isAGP ? '⭐ ' : ''}MEILLEUR TOUR: ${driver} - ${lapStr}`,
-                      time,
-                      timestamp: Date.now(),
-                      carNum
-                    }, ...prev].slice(0, 100));
-                  }
                 }
               }
               
@@ -6646,7 +7536,7 @@
             });
             
             if (setPilotStatus) setPilotStatus(newStatus);
-            // ═══ SYNC CHRONO AUTOMATIQUE v32.3 - AMÉLIORÉ ═══
+            // ═══ SYNC CHRONO AUTOMATIQUE v25 ═══
             // Chercher sessionTimeRemaining dans toutes les voitures (prendre la première disponible)
             const sessionTimeData = Object.values(data).find(car => car?.sessionTimeRemaining !== undefined && car.sessionTimeRemaining > 0);
             
@@ -6654,35 +7544,28 @@
               const sessionTimeRemaining = sessionTimeData.sessionTimeRemaining;
               setRaceSessionTime(sessionTimeRemaining);
               
-              // Synchronisation automatique AMÉLIORÉE
+              // Synchronisation automatique
               if (onSyncChrono && externalChronoState) {
                 const totalSec = (raceConfig?.durationHours || 24) * 3600;
                 const sessionElapsed = totalSec - sessionTimeRemaining;
                 const chronoElapsed = externalChronoState.elapsed || 0;
                 const diff = Math.abs(sessionElapsed - chronoElapsed);
                 
-                // v32.3: SYNC AUTOMATIQUE si:
-                // 1. Chrono à 0 ET session a déjà commencé (>30s)
-                // 2. OU écart > 30s ET chrono pas démarré manuellement
-                // 3. OU écart > 120s (2min) même si chrono tourne (désynchronisation majeure)
-                const shouldAutoSync = 
-                  (chronoElapsed === 0 && sessionElapsed > 30) || // Chrono pas démarré
-                  (diff > 30 && !externalChronoState.isRunning && sessionElapsed > 30) || // Écart avec chrono arrêté
-                  (diff > 120); // Désynchronisation majeure (>2min)
-                
-                if (shouldAutoSync && sessionElapsed > 0) {
-                  console.log('🔄 Auto-sync chrono rFactor2: session=' + Math.floor(sessionElapsed) + 's, chrono=' + Math.floor(chronoElapsed) + 's, écart=' + Math.floor(diff) + 's');
+                // SYNC AUTO: Si différence > 30s ET chrono pas démarré ET session en cours (>60s)
+                if (diff > 30 && !externalChronoState.isRunning && sessionElapsed > 60) {
+                  // Auto-sync silencieux
+                  console.log('🔄 Auto-sync chrono: écart=' + Math.floor(diff) + 's → synchronisation');
                   onSyncChrono(sessionTimeRemaining);
                 }
-                // Avertissement si écart modéré (30-120s)
-                else if (diff > 30 && diff <= 120 && externalChronoState.isRunning) {
+                // Si chrono tourne et écart > 60s, proposer une suggestion
+                else if (diff > 60 && externalChronoState.isRunning) {
                   setSuggestions(prev => {
                     const hasSync = prev.some(s => s.type === 'CHRONO_SYNC');
                     if (!hasSync) {
                       return [...prev, {
                         type: 'CHRONO_SYNC',
                         priority: 'WARNING',
-                        message: `⏱️ Décalage chrono: ${Math.floor(diff)}s - Bouton Sync pour corriger`,
+                        message: `⏱️ Décalage chrono: ${Math.floor(diff/60)}min ${Math.floor(diff%60)}s - Bouton Sync pour corriger`,
                         timestamp: Date.now()
                       }];
                     }
@@ -6885,19 +7768,6 @@
                       {formatChrono(externalChronoState.elapsed || 0)}
                     </span>
                     {externalChronoState.isRunning && <span style={{width: '6px', height: '6px', borderRadius: '50%', background: 'var(--green)', animation: 'pulse 1s infinite'}}></span>}
-                  </div>
-                </span>
-              )}
-              
-              {/* v32.3: Temps rFactor2 LIVE */}
-              {raceSessionTime !== null && raceSessionTime > 0 && (
-                <span className="help-tooltip" data-help="RFACTOR2 - Temps restant de la session rFactor 2 en direct">
-                  <div style={{display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 10px', background: 'rgba(0,200,255,0.15)', borderRadius: '8px', border: '1px solid var(--cyan)'}}>
-                    <span style={{fontSize: '10px'}}>🎮</span>
-                    <span style={{fontFamily: 'JetBrains Mono', fontSize: '12px', fontWeight: '600', color: 'var(--cyan)'}}>
-                      {formatChrono(raceSessionTime)}
-                    </span>
-                    <span style={{fontSize: '8px', color: 'var(--text-muted)'}}>restant</span>
                   </div>
                 </span>
               )}
@@ -7439,19 +8309,11 @@
                       <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px'}}>
                         <div style={{padding: '10px', background: 'var(--bg-input)', borderRadius: '6px', textAlign: 'center'}}>
                           <div style={{fontSize: '9px', color: 'var(--text-muted)'}}>Devant</div>
-                          <div style={{fontSize: '16px', fontWeight: '700', color: 'var(--orange)', fontFamily: 'JetBrains Mono'}}>
-                            {telemetryData[selectedTeam]?.gapAhead != null && telemetryData[selectedTeam].gapAhead > 0 
-                              ? '-' + telemetryData[selectedTeam].gapAhead.toFixed(1) + 's' 
-                              : <span style={{color: 'var(--text-dim)'}}>--</span>}
-                          </div>
+                          <div style={{fontSize: '16px', fontWeight: '700', color: 'var(--orange)', fontFamily: 'JetBrains Mono'}}>{telemetryData[selectedTeam]?.gapAhead > 0 ? '-' + telemetryData[selectedTeam].gapAhead.toFixed(1) + 's' : '--'}</div>
                         </div>
                         <div style={{padding: '10px', background: 'var(--bg-input)', borderRadius: '6px', textAlign: 'center'}}>
                           <div style={{fontSize: '9px', color: 'var(--text-muted)'}}>Derrière</div>
-                          <div style={{fontSize: '16px', fontWeight: '700', color: 'var(--green)', fontFamily: 'JetBrains Mono'}}>
-                            {telemetryData[selectedTeam]?.gapBehind != null && telemetryData[selectedTeam].gapBehind > 0 
-                              ? '+' + telemetryData[selectedTeam].gapBehind.toFixed(1) + 's' 
-                              : <span style={{color: 'var(--text-dim)'}}>--</span>}
-                          </div>
+                          <div style={{fontSize: '16px', fontWeight: '700', color: 'var(--green)', fontFamily: 'JetBrains Mono'}}>{telemetryData[selectedTeam]?.gapBehind > 0 ? '+' + telemetryData[selectedTeam].gapBehind.toFixed(1) + 's' : '--'}</div>
                         </div>
                       </div>
                     </div>
@@ -7602,60 +8464,35 @@
                       </div>
                     </div>
                     
-                    {/* PILOTE - v32.3 FIX: Données réelles */}
-                    {(() => {
-                      const stintData = currentStintData[selectedTeam];
-                      const teamTelem = telemetryData[selectedTeam];
-                      const driverName = teamTelem?.driverName || stintData?.driverName || 'Pilote';
-                      
-                      // Temps du stint en cours
-                      const stintElapsedMs = stintData?.startTime ? Date.now() - stintData.startTime : 0;
-                      const stintElapsedSec = Math.floor(stintElapsedMs / 1000);
-                      const stintHours = Math.floor(stintElapsedSec / 3600);
-                      const stintMins = Math.floor((stintElapsedSec % 3600) / 60);
-                      const stintTimeStr = stintHours + ':' + stintMins.toString().padStart(2,'0');
-                      
-                      // Compter les relais faits par cette équipe (pit-out events)
-                      const teamPitOuts = raceEvents.filter(e => e.type === 'pit-out' && e.message?.includes('#' + selectedTeam)).length;
-                      const relaisCount = Math.max(1, teamPitOuts); // Au moins 1 si en piste
-                      
-                      // Temps max 2h30 = 150 min
-                      const maxDriveMin = 150;
-                      const remainingMin = Math.max(0, maxDriveMin - stintHours * 60 - stintMins);
-                      const remainingStr = Math.floor(remainingMin / 60) + ':' + (remainingMin % 60).toString().padStart(2,'0');
-                      const remainingColor = remainingMin < 30 ? 'var(--red)' : remainingMin < 60 ? 'var(--orange)' : 'var(--green)';
-                      
-                      return (
-                        <div className="card help-tooltip" data-help="PILOTE - Stats du pilote actuel: temps de conduite du stint en cours, nombre de relais effectués, temps de conduite restant autorisé (max 2h30)." style={{padding: '10px'}}>
-                          <div style={{fontWeight: '700', fontSize: '12px', marginBottom: '8px', color: 'var(--text-muted)', display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
-                            <span>👨‍✈️ {driverName}</span>
-                            {pilotPerformance[selectedTeam] && (
-                              <span style={{padding: '2px 6px', borderRadius: '4px', fontSize: '9px', fontWeight: '600', background: pilotPerformance[selectedTeam].rating === 'excellent' ? 'rgba(0,255,102,0.2)' : pilotPerformance[selectedTeam].rating === 'good' ? 'rgba(88,166,255,0.2)' : 'rgba(255,136,0,0.2)', color: pilotPerformance[selectedTeam].rating === 'excellent' ? 'var(--green)' : pilotPerformance[selectedTeam].rating === 'good' ? 'var(--blue)' : 'var(--orange)'}}>
-                                {pilotPerformance[selectedTeam].rating === 'excellent' ? '⭐' : pilotPerformance[selectedTeam].rating === 'good' ? '✓' : '△'}
-                              </span>
-                            )}
-                          </div>
-                          <div style={{display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '4px'}}>
-                            <div style={{padding: '5px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
-                              <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>Temps stint</div>
-                              <div style={{fontWeight: '600', fontSize: '11px'}}>{stintData ? stintTimeStr : '--:--'}</div>
-                            </div>
-                            <div style={{padding: '5px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
-                              <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>Relais</div>
-                              <div style={{fontWeight: '600', fontSize: '11px'}}>{teamTelem ? relaisCount : '--'}</div>
-                            </div>
-                            <div style={{padding: '5px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
-                              <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>Tour actuel</div>
-                              <div style={{fontWeight: '600', fontSize: '11px'}}>{teamTelem?.currentLap || '--'}</div>
-                            </div>
-                            <div style={{padding: '5px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
-                              <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>Restant</div>
-                              <div style={{fontWeight: '600', fontSize: '11px', color: remainingColor}}>{stintData ? remainingStr : '--:--'}</div>
-                            </div>
-                          </div>
+                    {/* PILOTE - Déplacé de col3 */}
+                    <div className="card help-tooltip" data-help="PILOTE - Stats du pilote actuel: temps total de conduite, nombre de relais effectués, temps de repos depuis dernier stint, temps de conduite restant autorisé." style={{padding: '10px'}}>
+                      <div style={{fontWeight: '700', fontSize: '12px', marginBottom: '8px', color: 'var(--text-muted)', display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
+                        <span>👨‍✈️ PILOTE</span>
+                        {pilotPerformance[selectedTeam] && (
+                          <span style={{padding: '2px 6px', borderRadius: '4px', fontSize: '9px', fontWeight: '600', background: pilotPerformance[selectedTeam].rating === 'excellent' ? 'rgba(0,255,102,0.2)' : pilotPerformance[selectedTeam].rating === 'good' ? 'rgba(88,166,255,0.2)' : 'rgba(255,136,0,0.2)', color: pilotPerformance[selectedTeam].rating === 'excellent' ? 'var(--green)' : pilotPerformance[selectedTeam].rating === 'good' ? 'var(--blue)' : 'var(--orange)'}}>
+                            {pilotPerformance[selectedTeam].rating === 'excellent' ? '⭐' : pilotPerformance[selectedTeam].rating === 'good' ? '✓' : '△'}
+                          </span>
+                        )}
+                      </div>
+                      <div style={{display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '4px'}}>
+                        <div style={{padding: '5px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
+                          <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>Temps total</div>
+                          <div style={{fontWeight: '600', fontSize: '11px'}}>4:32:10</div>
                         </div>
-                      );
-                    })()}
+                        <div style={{padding: '5px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
+                          <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>Relais</div>
+                          <div style={{fontWeight: '600', fontSize: '11px'}}>3</div>
+                        </div>
+                        <div style={{padding: '5px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
+                          <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>Repos</div>
+                          <div style={{fontWeight: '600', fontSize: '11px'}}>2:15</div>
+                        </div>
+                        <div style={{padding: '5px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
+                          <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>Restant</div>
+                          <div style={{fontWeight: '600', fontSize: '11px', color: 'var(--green)'}}>5:28</div>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                   
                   {/* COL 3: Pit Strategy + Relais + ALERTES */}
@@ -7710,57 +8547,27 @@
                         </div>
                       </div>
                       <div style={{marginTop: '8px', display: 'flex', justifyContent: 'space-around', fontSize: '10px', color: 'var(--text-muted)'}}>
-                        <span>Arrêts faits: <strong style={{color:'var(--text)'}}>{raceEvents.filter(e => e.type === 'pit-in' && e.message?.includes('#' + selectedTeam)).length}</strong></span>
-                        <span>Temps/arrêt: <strong style={{color:'var(--text)'}}>~{raceConfig?.pitTime || 75}s</strong></span>
+                        <span>Arrêts faits: <strong style={{color:'var(--text)'}}>3</strong></span>
+                        <span>Temps perdu: <strong style={{color:'var(--text)'}}>3:45</strong></span>
                       </div>
                     </div>
                     
-                    {/* Relais en cours - v32.3 FIX: Données réelles */}
-                    {(() => {
-                      const stintData = currentStintData[selectedTeam];
-                      const teamTelem = telemetryData[selectedTeam];
-                      const teamCollected = collectedData?.[selectedTeam];
-                      
-                      // Temps du stint en cours
-                      const stintElapsedMs = stintData?.startTime ? Date.now() - stintData.startTime : 0;
-                      const stintElapsedSec = Math.floor(stintElapsedMs / 1000);
-                      const stintHours = Math.floor(stintElapsedSec / 3600);
-                      const stintMins = Math.floor((stintElapsedSec % 3600) / 60);
-                      const stintSecs = stintElapsedSec % 60;
-                      const stintTimeStr = stintHours.toString().padStart(2,'0') + ':' + stintMins.toString().padStart(2,'0') + ':' + stintSecs.toString().padStart(2,'0');
-                      
-                      // Tours du stint
-                      const currentLap = teamTelem?.currentLap || 0;
-                      const startLap = stintData?.startLap || currentLap;
-                      const stintLaps = Math.max(0, currentLap - startLap);
-                      
-                      // Carbu utilisé (tours * conso moyenne)
-                      const avgCons = teamCollected?.avgFuelCons || 2.8;
-                      const fuelUsed = (stintLaps * avgCons).toFixed(1);
-                      
-                      // Progression (2h30 max = 9000 sec)
-                      const maxStintSec = 2.5 * 3600;
-                      const progressPct = Math.min(100, (stintElapsedSec / maxStintSec) * 100);
-                      const progressColor = progressPct > 90 ? 'var(--red)' : progressPct > 75 ? 'var(--orange)' : 'var(--green)';
-                      
-                      return (
-                        <div className="card help-tooltip" data-help="RELAIS EN COURS - Temps écoulé depuis le dernier arrêt, tours effectués, carburant consommé. La barre de progression montre l'avancement vers le temps max de relais." style={{padding: '12px'}}>
-                          <div style={{fontWeight: '700', fontSize: '12px', marginBottom: '10px', color: 'var(--text-muted)'}}>⏱️ RELAIS EN COURS</div>
-                          <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px'}}>
-                            <span style={{fontSize: '10px', color: 'var(--text-muted)'}}>Temps relais</span>
-                            <span style={{fontSize: '16px', fontWeight: '700', fontFamily: 'JetBrains Mono', color: progressPct > 90 ? 'var(--red)' : progressPct > 75 ? 'var(--orange)' : 'var(--text)'}}>{stintData ? stintTimeStr : '--:--:--'}</span>
-                          </div>
-                          <div style={{height: '8px', background: 'var(--bg-input)', borderRadius: '4px', overflow: 'hidden', marginBottom: '8px'}}>
-                            <div style={{height: '100%', width: progressPct + '%', background: 'linear-gradient(90deg, var(--green), ' + progressColor + ')', borderRadius: '4px', transition: 'width 1s'}}/>
-                          </div>
-                          <div style={{display: 'flex', justifyContent: 'space-between', fontSize: '10px'}}>
-                            <span>Tours: <strong>{stintLaps}</strong></span>
-                            <span>Carbu utilisé: <strong>{fuelUsed}L</strong></span>
-                            <span>Max: 2h30</span>
-                          </div>
-                        </div>
-                      );
-                    })()}
+                    {/* Relais en cours */}
+                    <div className="card help-tooltip" data-help="RELAIS EN COURS - Temps écoulé depuis le dernier arrêt, tours effectués, carburant consommé. La barre de progression montre l'avancement vers le temps max de relais." style={{padding: '12px'}}>
+                      <div style={{fontWeight: '700', fontSize: '12px', marginBottom: '10px', color: 'var(--text-muted)'}}>⏱️ RELAIS EN COURS</div>
+                      <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px'}}>
+                        <span style={{fontSize: '10px', color: 'var(--text-muted)'}}>Temps relais</span>
+                        <span style={{fontSize: '16px', fontWeight: '700', fontFamily: 'JetBrains Mono'}}>01:23:45</span>
+                      </div>
+                      <div style={{height: '8px', background: 'var(--bg-input)', borderRadius: '4px', overflow: 'hidden', marginBottom: '8px'}}>
+                        <div style={{height: '100%', width: '56%', background: 'linear-gradient(90deg, var(--green), var(--cyan))', borderRadius: '4px'}}/>
+                      </div>
+                      <div style={{display: 'flex', justifyContent: 'space-between', fontSize: '10px'}}>
+                        <span>Tours: <strong>42</strong></span>
+                        <span>Carbu utilisé: <strong>118L</strong></span>
+                        <span>Max: 2h30</span>
+                      </div>
+                    </div>
                   </div>
                   
                 </div>
@@ -7800,52 +8607,36 @@
                   
                   {/* Duel 3 voitures configurable */}
                   <div className="card" style={{padding: '12px'}}>
-                    {/* v32.3 FIX: DUEL avec toutes les voitures de la session */}
                     <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px'}}>
                       <span style={{fontWeight: '700', fontSize: '13px'}}>⚔️ DUEL</span>
                       <div style={{display: 'flex', gap: '6px'}}>
-                        {[0, 1, 2].map(i => {
-                          // Utiliser liveAllVehicles si disponible, sinon standings (AGP uniquement)
-                          const allCars = liveAllVehicles.length > 0 
-                            ? liveAllVehicles.map(v => ({ num: String(v.carNumber), team: v.driverName || `#${v.carNumber}`, pos: v.position }))
-                            : standings;
-                          return (
-                            <select key={i} value={duelCars[i]} onChange={e => { const n = [...duelCars]; n[i] = e.target.value; setDuelCars(n); }} className="input" style={{padding: '4px 8px', fontSize: '10px', minWidth: '120px'}}>
-                              {allCars.map(s => <option key={s.num} value={s.num}>#{s.num} {s.team?.substring(0, 15)}</option>)}
-                            </select>
-                          );
-                        })}
+                        {[0, 1, 2].map(i => (
+                          <select key={i} value={duelCars[i]} onChange={e => { const n = [...duelCars]; n[i] = e.target.value; setDuelCars(n); }} className="input" style={{padding: '4px 8px', fontSize: '10px', minWidth: '100px'}}>
+                            {standings.map(s => <option key={s.num} value={s.num}>#{s.num} {s.team}</option>)}
+                          </select>
+                        ))}
                       </div>
                     </div>
                     <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-around'}}>
                       {duelCars.map((carNum, i) => {
-                        // Chercher dans liveAllVehicles d'abord, puis standings
-                        const liveData = liveAllVehicles.find(v => String(v.carNumber) === carNum);
                         const car = standings.find(s => s.num === carNum) || {};
-                        const data = telemetryData[carNum] || liveData;
+                        const data = telemetryData[carNum];
                         const status = pilotStatus?.[carNum];
                         const eq = EQUIPES.find(e => e.id === carNum);
-                        const isAGP = ['02', '05', '31', '99'].includes(carNum);
-                        const displayName = liveData?.driverName || car.team || `#${carNum}`;
-                        const borderColor = isAGP ? (eq?.couleur || 'var(--blue)') : 'var(--text-muted)';
-                        const textColor = isAGP ? (eq?.couleur || 'var(--blue)') : 'var(--orange)';
                         return (
                           <React.Fragment key={carNum}>
-                            <div style={{textAlign: 'center', padding: '10px', background: 'var(--bg-input)', borderRadius: '8px', borderTop: '3px solid ' + borderColor, minWidth: '90px', position: 'relative'}}>
+                            <div style={{textAlign: 'center', padding: '10px', background: 'var(--bg-input)', borderRadius: '8px', borderTop: '3px solid ' + (eq?.couleur || 'var(--text-muted)'), minWidth: '90px', position: 'relative'}}>
                               {status && !status.online && <span style={{position:'absolute', top:'4px', right:'4px', fontSize:'8px', color:'var(--red)', background:'rgba(255,51,68,0.2)', padding:'1px 4px', borderRadius:'3px'}}>OFF</span>}
-                              {liveData?.isInPit === 1 && <span style={{position:'absolute', top:'4px', left:'4px', fontSize:'8px', color:'var(--orange)', background:'rgba(240,136,62,0.2)', padding:'1px 4px', borderRadius:'3px'}}>PIT</span>}
-                              <div style={{fontSize: '16px', fontWeight: '800', color: textColor}}>{carNum}</div>
-                              <div style={{fontSize: '10px', color: 'var(--text-muted)', maxWidth: '80px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{displayName}</div>
-                              <div style={{fontSize: '22px', fontWeight: '800', marginTop: '4px'}}>P{data?.position || liveData?.position || car.pos || '-'}</div>
-                              <div style={{fontSize: '9px', color: 'var(--text-dim)'}}>Tour {data?.currentLap || liveData?.currentLap || car.lap || '-'}</div>
+                              <div style={{fontSize: '16px', fontWeight: '800', color: eq?.couleur || 'var(--text)'}}>{carNum}</div>
+                              <div style={{fontSize: '10px', color: 'var(--text-muted)'}}>{car.team || 'Équipe'}</div>
+                              <div style={{fontSize: '22px', fontWeight: '800', marginTop: '4px'}}>P{data?.position || car.pos || '-'}</div>
+                              <div style={{fontSize: '9px', color: 'var(--text-dim)'}}>Tour {data?.currentLap || car.lap || '-'}</div>
                             </div>
                             {i < 2 && (
                               <div style={{textAlign: 'center', padding: '6px'}}>
                                 <div style={{fontSize: '14px', fontWeight: '700', color: 'var(--cyan)', fontFamily: 'JetBrains Mono'}}>{(() => {
-                                    const car1 = liveAllVehicles.find(v => String(v.carNumber) === carNum);
-                                    const car2 = liveAllVehicles.find(v => String(v.carNumber) === duelCars[i+1]);
-                                    const gap1 = car1?.gapToLeader || telemetryData[carNum]?.gapLeader || car.gap || 0;
-                                    const gap2 = car2?.gapToLeader || telemetryData[duelCars[i+1]]?.gapLeader || (standings.find(s => s.num === duelCars[i+1])?.gap) || 0;
+                                    const gap1 = telemetryData[carNum]?.gapLeader || car.gap || 0;
+                                    const gap2 = telemetryData[duelCars[i+1]]?.gapLeader || (standings.find(s => s.num === duelCars[i+1])?.gap) || 0;
                                     const diff = Math.abs(gap1 - gap2);
                                     return diff > 0.1 ? '+' + diff.toFixed(1) + 's' : '+0.0s';
                                   })()}</div>
@@ -7957,13 +8748,6 @@
                       raceEvents.filter(ev => {
                         if (ev.type === 'flag' && !feedFilter.flag) return false;
                         if ((ev.type === 'pit-in' || ev.type === 'pit-out') && !feedFilter.pit) return false;
-                        if (ev.type === 'best' && !feedFilter.best) return false;
-                        // Filtre AGP: si activé, montrer seulement les événements des équipes AGP
-                        if (feedFilter.agp) {
-                          const agpCars = ['02', '05', '31', '99', '002', '005', '031', '099'];
-                          const carNum = ev.carNum || (ev.message && ev.message.match(/#(\d+)/)?.[1]);
-                          if (carNum && !agpCars.includes(String(carNum))) return false;
-                        }
                         return true;
                       }).slice(0, 50).map((ev, i) => (
                         <div key={i} style={{
@@ -7972,12 +8756,12 @@
                           display: 'flex', 
                           gap: '8px', 
                           alignItems: 'center',
-                          borderLeft: ev.type === 'pit-in' ? '3px solid var(--orange)' : ev.type === 'pit-out' ? '3px solid var(--green)' : ev.type === 'flag' ? '3px solid var(--yellow)' : ev.type === 'best' ? '3px solid var(--gold, #ffd700)' : 'none',
-                          background: ev.type === 'flag' ? 'rgba(240,192,0,0.1)' : ev.type === 'best' ? 'rgba(255,215,0,0.1)' : 'transparent'
+                          borderLeft: ev.type === 'pit-in' ? '3px solid var(--orange)' : ev.type === 'pit-out' ? '3px solid var(--green)' : ev.type === 'flag' ? '3px solid var(--yellow)' : 'none',
+                          background: ev.type === 'flag' ? 'rgba(240,192,0,0.1)' : 'transparent'
                         }}>
                           <span style={{fontSize: '9px', color: 'var(--text-dim)', minWidth: '50px'}}>{ev.time}</span>
                           <span style={{fontSize: '14px'}}>{ev.icon}</span>
-                          <span style={{fontSize: '11px', color: ev.type === 'best' ? 'var(--gold, #ffd700)' : 'var(--text)'}}>{ev.message}</span>
+                          <span style={{fontSize: '11px'}}>{ev.message}</span>
                         </div>
                       ))
                     )}
@@ -8054,6 +8838,37 @@
       const [currentTheme, setCurrentTheme] = useState(() => { try { return localStorage.getItem(SKEY + '-theme') || 'dark'; } catch { return 'dark'; } });
       useEffect(() => { document.body.className = ''; const theme = THEMES.find(t => t.id === currentTheme); if (theme) document.body.classList.add(theme.class); localStorage.setItem(SKEY + '-theme', currentTheme); }, [currentTheme]);
       
+      // 🔒 INITIALISATION SYSTÈME DE PERSISTANCE v33
+      const [persistenceStatus, setPersistenceStatus] = useState({ initialized: false, storage: null, pending: 0 });
+      useEffect(() => {
+        const initPersistence = async () => {
+          if (window.AGP_Perf) {
+            await window.AGP_Perf.init();
+            setPersistenceStatus(prev => ({ ...prev, initialized: true, storage: window.AGP_Perf.getStats().storage }));
+            
+            // Récupérer les données non sync au démarrage
+            const unsynced = await window.AGP_Critical?.recoverUnsyncedData();
+            if (unsynced?.length > 0) {
+              console.log(`📤 ${unsynced.length} opérations à resynchroniser`);
+              setPersistenceStatus(prev => ({ ...prev, pending: unsynced.length }));
+            }
+          }
+        };
+        initPersistence();
+        
+        // Mise à jour périodique du statut
+        const statusInterval = setInterval(() => {
+          if (window.AGP_Sync) {
+            setPersistenceStatus(prev => ({ 
+              ...prev, 
+              pending: window.AGP_Critical?.getPendingCount() || 0,
+              syncStatus: window.AGP_Sync.status
+            }));
+          }
+        }, 5000);
+        
+        return () => clearInterval(statusInterval);
+      }, []);
       
       const [teams, setTeams] = useState(() => {
         try {
@@ -8160,12 +8975,31 @@
         return () => clearInterval(interval);
       }, [teams, chronoState, safeActiveIdx, saveToIndexedDB]);
       
-      const saveTeamToFirebase = useCallback((teamData) => {
+      const saveTeamToFirebase = useCallback(async (teamData) => {
         if (!firebaseDb || !firebaseRef.current || !teamData) return;
         isLocalWriteRef.current = true;
         const saveData = { ...teamData, lastModified: Date.now(), modifiedBy: auth.teamName || auth.type };
+        
+        // 1. Backup localStorage immédiat
         try { const allTeams = [...teams]; const idx = allTeams.findIndex(t => t.name === teamData.name); if (idx >= 0) allTeams[idx] = saveData; localStorage.setItem(SKEY + '-teams-' + sessionId, JSON.stringify(allTeams)); } catch (e) {}
-        firebaseRef.current.child('teams/' + teamData.name).set(saveData).then(() => { setSyncStatus('connected'); setTimeout(() => { isLocalWriteRef.current = false; }, 500); }).catch(err => { console.warn('Firebase write error:', err); setSyncStatus('error'); isLocalWriteRef.current = false; });
+        
+        // 2. Backup IndexedDB critique (Write-Ahead Log)
+        if (window.AGP_Critical?.db) {
+          await window.AGP_Critical.saveTeamBackup(saveData);
+        }
+        
+        // 3. Firebase avec throttling
+        window.AGP_Sync?.incrementPending();
+        firebaseRef.current.child('teams/' + teamData.name).set(saveData).then(() => { 
+          setSyncStatus('connected'); 
+          window.AGP_Sync?.decrementPending();
+          setTimeout(() => { isLocalWriteRef.current = false; }, 500); 
+        }).catch(err => { 
+          console.warn('Firebase write error:', err); 
+          setSyncStatus('error'); 
+          window.AGP_Sync?.setStatus('error');
+          isLocalWriteRef.current = false; 
+        });
       }, [teams, sessionId, auth]);
       
       const saveChronoToFirebase = useCallback((chronoData) => {
@@ -8184,14 +9018,26 @@
         });
       }, [safeActiveIdx, canEdit, isCreator, saveTeamToFirebase]);
       
-      // AUTO-BACKUP vers localStorage toutes les 30 secondes
+      // AUTO-BACKUP vers localStorage toutes les 30 secondes + IndexedDB toutes les 2 minutes
       useEffect(() => {
-        const backupInterval = setInterval(() => {
+        let backupCount = 0;
+        const backupInterval = setInterval(async () => {
           try {
+            // localStorage: toutes les 30s
             localStorage.setItem(SKEY + '-teams-' + sessionId, JSON.stringify(teams));
             localStorage.setItem(SKEY + '-chrono-' + sessionId, JSON.stringify(chronoState));
             localStorage.setItem(SKEY + '-backup-time', new Date().toISOString());
-          } catch (e) { console.warn('Backup local failed:', e); }
+            
+            // IndexedDB: toutes les 2 minutes (4 x 30s)
+            backupCount++;
+            if (backupCount >= 4 && window.AGP_Critical?.db) {
+              backupCount = 0;
+              for (const team of teams) {
+                await window.AGP_Critical.saveTeamBackup(team);
+              }
+              window.AGP_Logger?.debug(`🔄 Auto-backup IndexedDB: ${teams.length} équipes`);
+            }
+          } catch (e) { console.warn('Backup failed:', e); }
         }, 30000);
         return () => clearInterval(backupInterval);
       }, [teams, chronoState, sessionId]);
@@ -8442,6 +9288,89 @@
       };
       const handleReset = () => { if (!isCreator) return; setConfirm({ title: 'RESET CHRONO ?', message: 'Remettre à zéro ?', onConfirm: () => { if (chronoIntervalRef.current) { clearInterval(chronoIntervalRef.current); chronoIntervalRef.current = null; } const newChronoState = { isRunning: false, elapsed: 0, startTs: null, offset: 0 }; setChronoState(newChronoState); saveChronoToFirebase(newChronoState); const newTeams = teams.map(t => ({ ...t, stints: (t.stints || []).map(s => ({ ...s, completed: false, realStintTime: null, incidentTime: 0, incidentNote: '' })), lastModified: Date.now() })); setTeams(newTeams); newTeams.forEach(t => saveTeamToFirebase(t)); setConfirm(null); } }); };
       const handleResetComplet = () => { if (!isCreator) return; setConfirm({ title: '⚠️ RESET COMPLET', message: 'Supprimer TOUT ?', onConfirm: () => { if (chronoIntervalRef.current) { clearInterval(chronoIntervalRef.current); chronoIntervalRef.current = null; } const newChronoState = { isRunning: false, elapsed: 0, startTs: null, offset: 0 }; setChronoState(newChronoState); saveChronoToFirebase(newChronoState); const freshTeams = defaultTeams(); setTeams(freshTeams); setSimulationResult(null); freshTeams.forEach(t => saveTeamToFirebase(t)); localStorage.removeItem(SKEY + '-teams-' + sessionId); localStorage.removeItem(SKEY + '-chrono-' + sessionId); setConfirm(null); } }); };
+      
+      // ═══ EXPORT/IMPORT BACKUP v33 ═══
+      const handleExportBackup = async () => {
+        try {
+          const result = await window.AGP_Backup?.exportAll(teams, chronoState, sessionId);
+          if (result?.success) {
+            alert(`✅ Backup exporté!\n\nChecksum: ${result.checksum.slice(0,16)}...\n${teams.length} équipes sauvegardées`);
+          }
+        } catch (error) {
+          alert(`❌ Erreur export: ${error.message}`);
+        }
+      };
+      
+      const handleImportBackup = () => {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.json';
+        input.onchange = async (e) => {
+          const file = e.target.files[0];
+          if (!file) return;
+          
+          try {
+            const result = await window.AGP_Backup?.importBackup(file);
+            if (result?.success) {
+              setConfirm({
+                title: '📥 IMPORTER BACKUP',
+                message: `Restaurer les données du ${result.meta.exportDate}?\n\n${result.data.teams?.length || 0} équipes seront importées.\n\n⚠️ Les données actuelles seront REMPLACÉES!`,
+                onConfirm: () => {
+                  // Restaurer les équipes
+                  if (result.data.teams) {
+                    const importedTeams = result.data.teams.map(t => ({
+                      ...t,
+                      importedAt: Date.now()
+                    }));
+                    setTeams(importedTeams);
+                    importedTeams.forEach(t => saveTeamToFirebase(t));
+                    localStorage.setItem(SKEY + '-teams-' + sessionId, JSON.stringify(importedTeams));
+                  }
+                  // Restaurer le chrono si présent
+                  if (result.data.chrono) {
+                    setChronoState(result.data.chrono);
+                    saveChronoToFirebase(result.data.chrono);
+                  }
+                  alert(`✅ Backup importé avec succès!\n\n${result.data.teams?.length || 0} équipes restaurées.`);
+                  setConfirm(null);
+                }
+              });
+            } else {
+              alert(`❌ Erreur import: ${result.error}`);
+            }
+          } catch (error) {
+            alert(`❌ Erreur import: ${error.message}`);
+          }
+        };
+        input.click();
+      };
+      
+      // Restore depuis IndexedDB (si données Firebase perdues)
+      const handleRestoreFromIndexedDB = async () => {
+        if (!isCreator) return;
+        try {
+          const backups = await window.AGP_Critical?.getAllBackups();
+          if (!backups?.length) {
+            alert('❌ Aucun backup IndexedDB trouvé');
+            return;
+          }
+          
+          setConfirm({
+            title: '🔄 RESTAURER DEPUIS INDEXEDDB',
+            message: `${backups.length} équipe(s) trouvées dans IndexedDB:\n\n${backups.map(b => `• ${b.teamName} (${new Date(b.timestamp).toLocaleString()})`).join('\n')}\n\nRestaurer ces données?`,
+            onConfirm: async () => {
+              const restoredTeams = backups.map(b => b.data);
+              setTeams(restoredTeams);
+              restoredTeams.forEach(t => saveTeamToFirebase(t));
+              localStorage.setItem(SKEY + '-teams-' + sessionId, JSON.stringify(restoredTeams));
+              alert(`✅ ${restoredTeams.length} équipes restaurées depuis IndexedDB`);
+              setConfirm(null);
+            }
+          });
+        } catch (error) {
+          alert(`❌ Erreur restauration: ${error.message}`);
+        }
+      };
       const handleSavePwd = () => { if (isCreator) { const updated = { ...passwords }; TEAMS.forEach(t => { if (newPwd[t]?.trim()) updated[t] = newPwd[t].trim().toUpperCase(); }); setPasswords(updated); } setShowPwdModal(false); setNewPwd({}); };
       const handleJoinSession = (code) => { onJoinSession(code); setShowSharePanel(false); };
       const handleValidateSettings = () => { 
@@ -8461,7 +9390,10 @@
       const progress = Math.min(100, (chronoState.elapsed / totalSec) * 100);
       const { stint: currentStint } = getNextStint(team?.stints || [], chronoState.elapsed);
       const strategies = compareStrategies(team?.settings || createSettings(), team?.pilots || []);
-      const bestStrategy = strategies[0];
+      
+      // v33 FIX: Afficher les stats du combo SÉLECTIONNÉ, pas le "meilleur"
+      const selectedComboKey = (team?.settings?.tireType || 'medium') + '_' + (team?.settings?.defaultMixture || 'race');
+      const bestStrategy = strategies.find(s => s.comboKey === selectedComboKey) || strategies[0];
 
       const tabs = [['live','📡 Live','Télémétrie temps réel pendant la course'],['settings','⚙️ Params','Configuration de la course: durée, essence, pneus, stands'],['planning','📋 Planning','Liste des relais avec pilotes et horaires'],['stats','🎯 Stats','Statistiques et rapport de course'],['perso','👤 Perso','Votre planning personnel avec vos horaires'],['pilots','👥 Équipage','Gérer les pilotes: noms, couleurs, badges'],['legend','📖 Aide','Guide complet d\'utilisation de l\'application']];
 
@@ -8508,7 +9440,7 @@
               </div>
               <div style={{display:'flex',alignItems:'center',gap:'6px',flexWrap:'wrap'}}>
                 <ThemeSelector currentTheme={currentTheme} onThemeChange={setCurrentTheme} />
-                <SyncStatus status={syncStatus} onRefresh={handleRefresh} connectedUsers={connectedUsers} />
+                <SyncStatus status={syncStatus} onRefresh={handleRefresh} connectedUsers={connectedUsers} persistenceStatus={persistenceStatus} />
                 <button className="btn btn-primary btn-sm" onClick={() => setShowSharePanel(true)}>🔗</button>
                 <div style={{padding:'4px 8px',background:'rgba(0,0,0,0.3)',borderRadius:'6px'}}><span className="mono" style={{fontSize:'10px',color:'var(--blue)'}}>{sessionId}</span></div>
                 <Clock />
@@ -8641,6 +9573,19 @@
                 <div style={{display:'flex',gap:'12px',justifyContent:'center'}}>
                   <button className="btn btn-danger" style={{padding:'12px 24px',fontSize:'14px'}} onClick={handleReset}>↺ RESET CHRONO</button>
                 </div>
+                
+                {/* ═══ BOUTONS BACKUP v33 ═══ */}
+                <div style={{display:'flex',gap:'12px',justifyContent:'center',marginTop:'12px',padding:'12px',background:'rgba(163,113,247,0.1)',borderRadius:'8px',border:'1px solid var(--purple)'}}>
+                  <button className="btn btn-ghost" style={{padding:'10px 16px',fontSize:'12px',border:'1px solid var(--green)'}} onClick={handleExportBackup} title="Exporter toutes les données dans un fichier JSON">
+                    📦 EXPORT BACKUP
+                  </button>
+                  <button className="btn btn-ghost" style={{padding:'10px 16px',fontSize:'12px',border:'1px solid var(--orange)'}} onClick={handleImportBackup} title="Importer les données depuis un fichier backup">
+                    📥 IMPORT BACKUP
+                  </button>
+                  <button className="btn btn-ghost" style={{padding:'10px 16px',fontSize:'12px',border:'1px solid var(--cyan)'}} onClick={handleRestoreFromIndexedDB} title="Restaurer depuis le backup IndexedDB local (si Firebase échoue)">
+                    🔄 RESTORE IndexedDB
+                  </button>
+                </div>
               </div>
               
               {/* Info */}
@@ -8656,15 +9601,61 @@
           {mainTab === 'pilots' && (
             <div className="card" style={{padding:'16px'}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'16px'}}><h3 style={{fontSize:'14px',color:'var(--blue)'}}>👥 ÉQUIPAGE</h3><div style={{display:'flex',gap:'6px'}}>{team.pilotsValidated && <span className="badge badge-green">✓ Équipage validé</span>}{team.settings.validated && <span className="badge badge-green">✓ Params validés</span>}</div></div>
+              
+              {/* Légende des statuts */}
+              <div style={{display:'flex',gap:'12px',marginBottom:'12px',padding:'8px',background:'rgba(0,0,0,0.2)',borderRadius:'6px',fontSize:'10px',flexWrap:'wrap'}}>
+                <span title="Pilote en piste">🟢 En piste</span>
+                <span title="Au stand">🟡 Stand</span>
+                <span title="Connecté en spectateur, prêt pour relève">🔵 Secours</span>
+                <span title="Non connecté">⚫ Offline</span>
+              </div>
+              
               <div style={{display:'grid',gap:'12px'}}>
                 {team.pilots.map((p, i) => {
                   const pilotColor = p.color || COLORS[i];
+                  const pilotStatus = window.AGP_DriverMatching?.getPilotStatus(p.id) || { icon: '⚫', label: 'OFFLINE', color: '#7d8590' };
+                  const isConnected = pilotStatus.id === 'on_track' || pilotStatus.id === 'in_pit';
                   return (
-                  <div key={p.id} style={{padding:'12px',background:'rgba(0,0,0,0.3)',borderRadius:'10px',opacity: p.active === false ? 0.4 : 1}}>
+                  <div key={p.id} style={{padding:'12px',background:'rgba(0,0,0,0.3)',borderRadius:'10px',opacity: p.active === false ? 0.4 : 1, border: isConnected ? `1px solid ${pilotStatus.color}` : '1px solid transparent'}}>
                     <div style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'8px'}}>
                       <span className="help-tooltip" data-help="Activer/désactiver ce pilote pour la course"><input type="checkbox" checked={p.active !== false} onChange={e => { if (!isSpectator) { const pilots = [...team.pilots]; pilots[i] = { ...p, active: e.target.checked }; updateTeam({ pilots, pilotsValidated: false }); }}} disabled={isSpectator} style={{width:'18px',height:'18px'}} /></span>
+                      
+                      {/* Indicateur de statut de connexion */}
+                      <span 
+                        title={`${pilotStatus.label}${pilotStatus.carNumber ? ' - Voiture #' + pilotStatus.carNumber : ''}${pilotStatus.matchScore ? ' (Match: ' + pilotStatus.matchScore + '%)' : ''}`}
+                        style={{fontSize:'16px',cursor:'help',minWidth:'24px',textAlign:'center'}}
+                      >
+                        {pilotStatus.icon}
+                      </span>
+                      
                       <PilotBadge pilot={{...p, color: pilotColor}} size="lg" />
-                      <span className="help-tooltip" data-help="Nom complet du pilote" style={{flex:1}}><input className="input" style={{width:'100%',fontSize:'13px'}} placeholder="Nom" value={p.name || ''} disabled={isSpectator} onChange={e => { const pilots = [...team.pilots]; const newName = e.target.value; const defaults = PILOT_DEFAULTS[newName] || {}; pilots[i] = { ...p, name: newName, ...(defaults.color && !p.color ? { color: defaults.color } : {}), ...(defaults.badge && !p.badgeEmoji ? { badgeEmoji: defaults.badge } : {}) }; updateTeam({ pilots, pilotsValidated: false }); }} /></span>
+                      <span className="help-tooltip" data-help="Nom complet du pilote (doit correspondre au nom dans rFactor/SimHub pour association automatique)" style={{flex:1}}><input className="input" style={{width:'100%',fontSize:'13px'}} placeholder="Nom (identique à SimHub)" value={p.name || ''} disabled={isSpectator} onChange={e => { const pilots = [...team.pilots]; const newName = e.target.value; const defaults = PILOT_DEFAULTS[newName] || {}; pilots[i] = { ...p, name: newName, ...(defaults.color && !p.color ? { color: defaults.color } : {}), ...(defaults.badge && !p.badgeEmoji ? { badgeEmoji: defaults.badge } : {}) }; updateTeam({ pilots, pilotsValidated: false }); }} /></span>
+                      
+                      {/* Infos connexion si connecté */}
+                      {isConnected && (
+                        <div style={{display:'flex',alignItems:'center',gap:'4px',padding:'2px 8px',background:'rgba(0,0,0,0.4)',borderRadius:'4px',fontSize:'10px',color:pilotStatus.color}}>
+                          <span>#{pilotStatus.carNumber}</span>
+                          {pilotStatus.currentLap && <span>T{pilotStatus.currentLap}</span>}
+                        </div>
+                      )}
+                      
+                      {/* Bouton pilote de secours */}
+                      {!isConnected && p.active !== false && !isSpectator && (
+                        <button 
+                          className="btn btn-ghost btn-sm"
+                          style={{padding:'2px 6px',fontSize:'9px',border:'1px solid var(--blue)',color:'var(--blue)'}}
+                          onClick={() => {
+                            if (window.AGP_DriverMatching) {
+                              window.AGP_DriverMatching.markAsStandby(p.id);
+                              // Force re-render
+                              updateTeam({ _statusUpdate: Date.now() });
+                            }
+                          }}
+                          title="Marquer comme pilote de secours (prêt pour relève au stand)"
+                        >
+                          🔵 SECOURS
+                        </button>
+                      )}
                     </div>
                     {!isSpectator && (
                       <div style={{display:'flex',alignItems:'center',gap:'8px',flexWrap:'wrap',paddingLeft:'28px'}}>
@@ -8719,12 +9710,6 @@
             pilots={team.pilots} 
             chronoState={chronoState}
             sessionId={sessionId}
-            teamCarNumber={(() => {
-              // v32.3 FIX: Convertir le numéro de voiture TEAM_COLORS (3 chiffres) vers format Firebase (2 chiffres)
-              // '005' → '05', '002' → '02', '031' → '31', '099' → '99'
-              const num = TEAM_COLORS[team.name]?.number || '005';
-              return num.length === 3 ? num.slice(1) : num; // Retirer le premier 0 si 3 chiffres
-            })()}
             raceMode={raceMode.mode}
             onAutoImportChrono={(data) => {
               // ═══ AUTO-IMPORT CHRONO PILOTE v30 ═══
@@ -8765,21 +9750,14 @@
               }));
             }}
             onSyncChrono={(sessionTime) => {
-              // v32.3: Synchroniser le chrono avec le temps de session restant ET démarrer automatiquement
+              // Synchroniser le chrono avec le temps de session restant
               if (sessionTime !== null && sessionTime > 0) {
                 const totalSec = (team.settings?.durationHours || 24) * 3600;
                 const elapsed = totalSec - sessionTime;
                 if (elapsed >= 0) {
-                  // Démarrer le chrono automatiquement avec le bon temps
-                  const newState = { 
-                    isRunning: true, // DÉMARRER LE CHRONO
-                    elapsed: Math.floor(elapsed), 
-                    offset: Math.floor(elapsed),
-                    startTs: Date.now() // Pour que l'intervalle continue correctement
-                  };
+                  const newState = { ...chronoState, elapsed: Math.floor(elapsed), offset: Math.floor(elapsed) };
                   setChronoState(newState);
                   saveChronoToFirebase(newState);
-                  console.log('✅ Chrono synchronisé avec rFactor2: ' + Math.floor(elapsed) + 's écoulés');
                 }
               }
             }}
