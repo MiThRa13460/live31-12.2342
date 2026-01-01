@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>TEAM AGP - Endurance Strategy 24h v32.4-FIXED</title>
+  <title>TEAM AGP - Endurance Strategy 24h v33.5</title>
   <script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
@@ -1234,6 +1234,11 @@
         return teamPilots.map(p => ({ ...p, connectionStatus: this.getPilotStatus(p.id) }));
       },
       
+      // v33.3: Alias plus clair pour getOnTrackPilot
+      getActivePilot(teamPilots) {
+        return this.getOnTrackPilot(teamPilots);
+      },
+      
       getOnTrackPilot(teamPilots) {
         if (!teamPilots) return null;
         for (const pilot of teamPilots) {
@@ -1241,6 +1246,38 @@
           if (status?.id === 'on_track') return { ...pilot, status };
         }
         return null;
+      },
+      
+      // v33.3: Récupérer le pilote au stand (prêt pour relève)
+      getInPitPilot(teamPilots) {
+        if (!teamPilots) return null;
+        for (const pilot of teamPilots) {
+          const status = this.pilotStatuses.get(pilot.id);
+          if (status?.id === 'in_pit' || status?.id === 'standby') return { ...pilot, status };
+        }
+        return null;
+      },
+      
+      // v33.3: Récupérer tous les statuts d'une équipe avec indicateurs visuels
+      getTeamPilotStatuses(teamPilots) {
+        if (!teamPilots) return [];
+        return teamPilots.map(pilot => {
+          const status = this.pilotStatuses.get(pilot.id) || { ...PILOT_STATUS.OFFLINE };
+          return {
+            ...pilot,
+            connectionStatus: status,
+            isOnTrack: status.id === 'on_track',
+            isInPit: status.id === 'in_pit',
+            isStandby: status.id === 'standby',
+            isOffline: status.id === 'offline',
+            statusIcon: status.icon,
+            statusLabel: status.label,
+            statusColor: status.color,
+            matchScore: status.matchScore || 0,
+            detectedName: status.driverName || null,
+            carNumber: status.carNumber || null
+          };
+        });
       },
       
       getStandbyPilots(teamPilots) {
@@ -5215,7 +5252,11 @@
       <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(280px,1fr))',gap:'10px',marginBottom:'12px'}}>
         {teams.map((t, idx) => {
           const { stint: currentStint } = getNextStint(t.stints, elapsed);
-          const currentPilot = t.pilots.find(p => p.id === currentStint?.pilotId);
+          // v33.2 FIX: Priorité au pilote DÉTECTÉ par DriverMatchingSystem
+          const detectedPilot = window.AGP_DriverMatching?.getActivePilot?.(t.pilots);
+          const plannedPilot = t.pilots.find(p => p.id === currentStint?.pilotId);
+          // Utiliser le pilote détecté en temps réel, sinon fallback sur le planning
+          const currentPilot = detectedPilot || plannedPilot;
           const backupPilot = t.pilots.find(p => p.id === currentStint?.backupId);
           const strategies = compareStrategies(t.settings, t.pilots);
           // v33 FIX: Utiliser le combo SÉLECTIONNÉ pour les stats, pas strategies[0]
@@ -5242,7 +5283,7 @@
                     <div style={{width:'24px',height:'24px',borderRadius:'50%',background:currentPilot?.color||'#666',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'10px',fontWeight:'800',color:'#fff'}}>{currentPilot?.badgeEmoji || currentPilot?.name?.charAt(0)}</div>
                     <div>
                       <div style={{fontSize:'11px',fontWeight:'700',color:'var(--text)'}}>{currentPilot?.name?.split(' ')[0] || 'N/A'}</div>
-                      <div style={{fontSize:'8px',color:'var(--green)'}}>🏎️ PILOTE</div>
+                      <div style={{fontSize:'8px',color: detectedPilot ? 'var(--green)' : 'var(--text-muted)'}}>{detectedPilot ? '🟢 EN PISTE' : '📋 PLANIFIÉ'}</div>
                     </div>
                   </div>
                   {backupPilot && (
@@ -7785,6 +7826,43 @@
             setTelemetryData(data);
             setIsConnected(true);
             
+            // ═══ v33.3: DÉTECTION AUTOMATIQUE PILOTE ACTIF ═══
+            // Appeler DriverMatchingSystem pour matcher les pilotes SimHub avec l'équipage
+            if (window.AGP_DriverMatching && teams && teams.length > 0) {
+              window.AGP_DriverMatching.updateFromTelemetry(rawData, teams);
+              
+              // Forcer update du state pour propager les changements
+              const activePilots = {};
+              teams.forEach(team => {
+                const onTrack = window.AGP_DriverMatching.getOnTrackPilot(team.pilots);
+                if (onTrack) {
+                  activePilots[team.name] = {
+                    pilot: onTrack,
+                    detectedName: onTrack.status?.driverName,
+                    matchScore: onTrack.status?.matchScore,
+                    carNumber: onTrack.status?.carNumber
+                  };
+                }
+              });
+              
+              // Mettre à jour pilotStatus avec les pilotes détectés
+              setPilotStatus(prev => {
+                const updated = { ...prev };
+                Object.entries(activePilots).forEach(([teamName, info]) => {
+                  const carNum = info.carNumber;
+                  if (carNum && updated[carNum]) {
+                    updated[carNum] = {
+                      ...updated[carNum],
+                      detectedPilot: info.pilot,
+                      detectedPilotName: info.pilot.name,
+                      matchScore: info.matchScore
+                    };
+                  }
+                });
+                return updated;
+              });
+            }
+            
             // v32.4: Ajouter événement "SESSION" au premier refresh si liste vide
             setRaceEvents(prev => {
               if (prev.length === 0) {
@@ -7986,6 +8064,34 @@
                   if (!seenEventsRef.current.has(eventKey)) {
                     seenEventsRef.current.add(eventKey);
                     
+                    // v33.4: Calculer la durée RÉELLE du pit stop
+                    const pitInTs = currentStintData[carNum]?.pitInTimestamp;
+                    const pitDurationReal = pitInTs ? Math.round((now - pitInTs) / 1000) : 0;
+                    const pitTimeNormal = (raceConfig?.pitLaneTime || 30) + (raceConfig?.pitStopTime || 45) + (raceConfig?.tireChangeTime || 25);
+                    const pitExcess = Math.max(0, pitDurationReal - pitTimeNormal);
+                    
+                    // Si pit excessif (réparations, problèmes), ajouter comme incident
+                    if (pitExcess > 30 && onAddIncident) {
+                      onAddIncident(carNum, pitExcess, 'PIT');
+                      window.AGP_Logger?.warn('Pit prolongé détecté', { 
+                        car: carNum, 
+                        duration: pitDurationReal, 
+                        normal: pitTimeNormal, 
+                        excess: pitExcess 
+                      });
+                      
+                      // Log dans les événements
+                      setRaceEvents(prev => [{
+                        type: 'pit-extended',
+                        icon: '🔧',
+                        message: `#${carNum} Arrêt prolongé: ${pitDurationReal}s (normal: ~${pitTimeNormal}s) → +${pitExcess}s incident`,
+                        time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit',minute:'2-digit',second:'2-digit'}),
+                        timestamp: now,
+                        pitDuration: pitDurationReal,
+                        pitExcess: pitExcess
+                      }, ...prev].slice(0, 100));
+                    }
+                    
                     setCurrentStintData(prev => ({
                       ...prev,
                       [carNum]: {
@@ -7993,24 +8099,33 @@
                         startTime: now,
                         pitOutTime: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', hour12: false }),
                         driverName: carData.driverName || 'Unknown',
-                        laps: []
+                        laps: [],
+                        // v33.4: Mémoriser la durée du pit précédent
+                        lastPitDuration: pitDurationReal,
+                        lastPitExcess: pitExcess
                       }
                     }));
                     
                     setSuggestions(prev => [...prev.filter(s => s.type !== 'PIT_OUT_' + carNum), {
                       type: 'PIT_OUT_' + carNum,
-                      priority: 'INFO',
-                      message: `🟢 ${carData.driverName || 'Voiture ' + carNum} sort des stands - Début relais`,
-                      timestamp: now
+                      priority: pitExcess > 30 ? 'WARNING' : 'INFO',
+                      message: pitExcess > 30 
+                        ? `🟢 ${carData.driverName || 'Voiture ' + carNum} sort - ⚠️ Pit prolongé +${pitExcess}s`
+                        : `🟢 ${carData.driverName || 'Voiture ' + carNum} sort des stands - Début relais`,
+                      timestamp: now,
+                      pitDuration: pitDurationReal
                     }]);
                     
                     // ═══ v32: LOG PIT OUT DANS EVENTS ═══
                     setRaceEvents(prev => [{
                       type: 'pit-out',
-                      icon: '🚀',
-                      message: `#${carNum} ${carData.driverName || ''} sort des stands`,
+                      icon: pitExcess > 30 ? '🔧' : '🚀',
+                      message: pitExcess > 30 
+                        ? `#${carNum} ${carData.driverName || ''} sort - Arrêt ${pitDurationReal}s (+${pitExcess}s)`
+                        : `#${carNum} ${carData.driverName || ''} sort des stands`,
                       time: new Date().toLocaleTimeString('fr-FR', {hour:'2-digit',minute:'2-digit',second:'2-digit'}),
-                      timestamp: now
+                      timestamp: now,
+                      pitDuration: pitDurationReal
                     }, ...prev].slice(0, 100));
                   }
                 }
@@ -8024,6 +8139,16 @@
                   const eventKey = `pit-in-${carNum}-${carData.currentLap}`;
                   if (!seenEventsRef.current.has(eventKey)) {
                     seenEventsRef.current.add(eventKey);
+                    
+                    // v33.4: Stocker le timestamp d'entrée aux stands pour mesurer la durée réelle
+                    setCurrentStintData(prev => ({
+                      ...prev,
+                      [carNum]: {
+                        ...prev[carNum],
+                        pitInTimestamp: now,
+                        pitInLap: carData.currentLap
+                      }
+                    }));
                     
                     const stintData = currentStintData[carNum];
                     const carCollected = collectedData?.[carNum];
@@ -8163,9 +8288,24 @@
                 }
               }
               
-              // ═══ v32.5: SYNC CHRONO SEULEMENT SI COURSE VRAIMENT DÉMARRÉE ═══
-              // Ne pas sync pendant: warmup, reconnaissance, tour de formation
-              if (sessionElapsed > 0 && onSyncChrono && externalChronoState && isRaceStarted) {
+              // ═══ v33.2 FIX: SYNC CHRONO MÊME EN YELLOW FLAG ═══
+              // La course est considérée démarrée si:
+              // 1. isRaceStarted === true (GREEN FLAG)
+              // 2. OU si currentLap >= 1 (au moins 1 tour fait = course en cours)
+              // 3. OU si sessionElapsed > 120 ET on a des données valides
+              const hasLaps = Object.values(rawData).some(car => car?.currentLap >= 1);
+              const raceEffectivelyStarted = isRaceStarted || hasLaps || (sessionElapsed > 120);
+              
+              if (sessionElapsed > 0 && onSyncChrono && externalChronoState && raceEffectivelyStarted) {
+              // v33.2: Log la détection de course démarrée
+              if (raceEffectivelyStarted && !window._loggedRaceStarted) {
+                window.AGP_Logger?.info('🏁 Course détectée comme démarrée', { 
+                  isRaceStarted, hasLaps, sessionElapsed: Math.floor(sessionElapsed),
+                  phase: currentPhase 
+                });
+                window._loggedRaceStarted = true;
+              }
+              
                 const chronoElapsed = externalChronoState.elapsed || 0;
                 const diff = Math.abs(sessionElapsed - chronoElapsed);
                 
@@ -8200,7 +8340,7 @@
                     return prev;
                   });
                 }
-              } else if (!isRaceStarted && sessionElapsed > 0) {
+              } else if (!raceEffectivelyStarted && sessionElapsed > 0) {
                 // Log si pas encore en course (une seule fois)
                 if (!window._warnedNotStarted) {
                   window.AGP_Logger?.info('Chrono en attente GREEN FLAG', { phase: currentPhase });
@@ -8280,7 +8420,7 @@
         return () => telemetryRef.off();
       }, [sessionId]);
       
-      // Collecte données (max 30 tours)
+      // Collecte données (max 30 tours) - v33.3: Attribution automatique au pilote détecté
       const collectLapData = useCallback((carNum, carData) => {
         if (!setCollectedData) return;
         
@@ -8298,17 +8438,68 @@
         
         const fuelUsed = carData.fuelUsedLastLap || 2.8;
         
+        // v33.3: Récupérer le pilote détecté pour ce numéro de voiture
+        const detectedPilotId = window.AGP_DriverMatching?.reverseAssociations?.get(carNum);
+        const detectedPilotStatus = detectedPilotId ? window.AGP_DriverMatching?.getPilotStatus(detectedPilotId) : null;
+        
         setCollectedData(prev => {
           const carCollected = prev?.[carNum] || { laps: [], avgLapTime: 0, avgFuelCons: 0, bestLap: 999, totalLaps: 0 };
           if (carCollected.lastLap === carData.currentLap) return prev;
           
-          const newLap = { lap: carData.currentLap, time: lapTimeSec, fuel: fuelUsed, timestamp: Date.now() };
+          // v33.3: Inclure le pilote détecté dans les données du tour
+          const newLap = { 
+            lap: carData.currentLap, 
+            time: lapTimeSec, 
+            fuel: fuelUsed, 
+            timestamp: Date.now(),
+            // Attribution automatique au pilote détecté
+            pilotId: detectedPilotId || null,
+            pilotName: detectedPilotStatus?.driverName || carData.driverName || null
+          };
           const newLaps = [...carCollected.laps, newLap].slice(-30); // MAX 30 TOURS
           const avgTime = newLaps.reduce((a, l) => a + l.time, 0) / newLaps.length;
           const avgFuel = newLaps.reduce((a, l) => a + l.fuel, 0) / newLaps.length;
           const bestLap = Math.min(...newLaps.map(l => l.time));
           
-          return { ...prev, [carNum]: { laps: newLaps, avgLapTime: avgTime, avgLapTimeStr: formatLapTimeSec(avgTime), avgFuelCons: avgFuel, bestLap, bestLapStr: formatLapTimeSec(bestLap), totalLaps: newLaps.length, lastLap: carData.currentLap } };
+          // v33.3: Calculer les stats par pilote
+          const pilotStats = {};
+          newLaps.forEach(lap => {
+            if (lap.pilotId) {
+              if (!pilotStats[lap.pilotId]) {
+                pilotStats[lap.pilotId] = { laps: [], times: [], fuels: [] };
+              }
+              pilotStats[lap.pilotId].laps.push(lap);
+              pilotStats[lap.pilotId].times.push(lap.time);
+              pilotStats[lap.pilotId].fuels.push(lap.fuel);
+            }
+          });
+          
+          // Calculer moyennes par pilote
+          Object.keys(pilotStats).forEach(pId => {
+            const stats = pilotStats[pId];
+            stats.avgTime = stats.times.reduce((a,b) => a+b, 0) / stats.times.length;
+            stats.avgFuel = stats.fuels.reduce((a,b) => a+b, 0) / stats.fuels.length;
+            stats.bestTime = Math.min(...stats.times);
+            stats.lapCount = stats.laps.length;
+          });
+          
+          return { 
+            ...prev, 
+            [carNum]: { 
+              laps: newLaps, 
+              avgLapTime: avgTime, 
+              avgLapTimeStr: formatLapTimeSec(avgTime), 
+              avgFuelCons: avgFuel, 
+              bestLap, 
+              bestLapStr: formatLapTimeSec(bestLap), 
+              totalLaps: newLaps.length, 
+              lastLap: carData.currentLap,
+              // v33.3: Stats par pilote
+              pilotStats,
+              currentPilotId: detectedPilotId,
+              currentPilotName: detectedPilotStatus?.driverName || carData.driverName
+            } 
+          };
         });
       }, [setCollectedData]);
       
@@ -11105,8 +11296,8 @@
               
               window.AGP_Logger?.info('Auto-remplissage relais', { stint: finalIdx + 1, team: targetTeam.name, time: stintData.realStintTime, incident: incidentSec });
             }}
-            onAddIncident={(carNum, seconds) => {
-              // ═══ AJOUT INCIDENT FCY/SC AU PLANNING ═══
+            onAddIncident={(carNum, seconds, incidentType = 'FCY') => {
+              // ═══ AJOUT INCIDENT AU PLANNING (FCY/SC/PIT PROLONGÉ) ═══
               const teamIdx = teams.findIndex(t => {
                 if (carNum === '02' || carNum === '002') return t.name === 'AGP 2';
                 if (carNum === '05' || carNum === '005' || carNum === '01') return t.name === 'AGP 1';
@@ -11124,13 +11315,19 @@
               const stintIdx = targetTeam.stints.findIndex(s => !s.completed);
               if (stintIdx === -1) return;
               
+              // v33.4: Différencier le type d'incident dans la note
+              const incidentLabel = incidentType === 'PIT' ? '🔧 Pit prolongé' : 
+                                   incidentType === 'SC' ? '🟡 Safety Car' :
+                                   incidentType === 'REPAIR' ? '🛠️ Réparations' :
+                                   '🟨 FCY';
+              
               // Ajouter les secondes d'incident
               const newStints = [...targetTeam.stints];
               const currentIncident = newStints[stintIdx].incidentTime || 0;
               newStints[stintIdx] = {
                 ...newStints[stintIdx],
                 incidentTime: currentIncident + Math.round(seconds),
-                incidentNote: (newStints[stintIdx].incidentNote || '') + ' FCY +' + Math.round(seconds) + 's'
+                incidentNote: (newStints[stintIdx].incidentNote || '') + ` ${incidentLabel} +${Math.round(seconds)}s`
               };
               
               // Mettre à jour
@@ -11145,7 +11342,7 @@
                 saveTeamToFirebase(teamToSave);
               }
               
-              console.log(`🟡 FCY ajouté: +${Math.round(seconds)}s incident pour ${targetTeam.name}`);
+              console.log(`🔧 Incident ajouté: +${Math.round(seconds)}s pour ${targetTeam.name} (${incidentLabel})`);
             }}
           />}
 
