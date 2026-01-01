@@ -1,9 +1,39 @@
 <!DOCTYPE html>
+<!--
+  ═══════════════════════════════════════════════════════════════════
+  TEAM AGP - Endurance Strategy Dashboard
+  v33.9 - Auto-détection Pilote Pré-course
+  ═══════════════════════════════════════════════════════════════════
+  
+  CHANGELOG v33.9 (01/01/2026):
+  - NEW: Auto-détection du pilote en piste pour enregistrement pré-course
+  - NEW: Pilote auto-sélectionné si détecté ON_TRACK par SimHub
+  - NEW: Dropdown indique les pilotes en piste avec 🟢
+  - FIX: L'association SimHub ↔ Planning est automatique (Lucas = Lucas)
+  
+  CHANGELOG v33.8:
+  - FIX: Page Prédiction Pilote - "pilote.toLowerCase is not a function"
+  - FIX: Gestion pilote comme objet {id, name} ou string
+  
+  CHANGELOG v33.7:
+  - FIX: Auto-remplissage fonctionne même sans tours collectés
+  - NEW: Validation manuelle obligatoire si décalage > 30s
+  
+  CHANGELOG v33.6:
+  - FIX: getTyreWear() gère formats 0-1 (décimal), négatif et 0-100
+  - FIX: sector3 calcul amélioré avec lecture directe si disponible
+  
+  HISTORIQUE:
+  - v33.5: Plugin v3.2.9 complet, HTML 12k lignes
+  - v33.4: Calcul durée pit stop réelle
+  - v33.3: Détection automatique pilote actif
+  ═══════════════════════════════════════════════════════════════════
+-->
 <html lang="fr">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>TEAM AGP - Endurance Strategy 24h v33.5</title>
+  <title>TEAM AGP - Endurance Strategy 24h v33.9</title>
   <script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
@@ -6628,7 +6658,16 @@
       const formatLapTimeSec = (s) => { if (!s || s <= 0 || s > 600) return '--:--.---'; const m = Math.floor(s / 60); const sec = Math.floor(s % 60); const ms = Math.round((s % 1) * 1000); return m + ':' + sec.toString().padStart(2, '0') + '.' + ms.toString().padStart(3, '0'); };
       const formatLapTime = (t) => { if (!t || t.includes('--')) return '--:--.---'; let clean = t.replace(/^00:/, ''); const m = clean.match(/(\d+):(\d+)\.(\d{3})/); return m ? parseInt(m[1]) + ':' + m[2] + '.' + m[3] : clean.substring(0,9); };
       const formatChrono = (s) => { if (!s && s !== 0) return '--:--:--'; const h = Math.floor(Math.abs(s)/3600); const m = Math.floor((Math.abs(s)%3600)/60); const sec = Math.floor(Math.abs(s)%60); return h.toString().padStart(2,'0')+':'+m.toString().padStart(2,'0')+':'+sec.toString().padStart(2,'0'); };
-      const getTyreWear = (w) => { if (w === undefined || w === null) return 100; if (w < 0) return Math.min(100, Math.max(0, 100 + w / 100)); return Math.min(100, Math.max(0, w)); };
+      const getTyreWear = (w) => { 
+        // v33.6 FIX: Gestion robuste des formats de données pneus
+        if (w === undefined || w === null) return 100; 
+        // Si valeur négative (format usure: -5 = 5% d'usure = 95% restant)
+        if (w < 0) return Math.min(100, Math.max(0, 100 + w));
+        // Si valeur entre 0 et 1.5 (format décimal: 0.95 = 95% restant)
+        if (w > 0 && w <= 1.5) return Math.round(w * 100);
+        // Sinon valeur directe (format %: 95 = 95% restant)
+        return Math.min(100, Math.max(0, Math.round(w))); 
+      };
       const getTyreColor = (w) => { const wear = getTyreWear(w); return wear >= 70 ? 'var(--green)' : wear >= 40 ? 'var(--orange)' : 'var(--red)'; };
       
       // Météo simulée
@@ -6694,6 +6733,48 @@
       const [collectedRefs, setCollectedRefs] = useState({});
       const [showRefPanel, setShowRefPanel] = useState(false);
       const [showWhatsNew, setShowWhatsNew] = useState(false);
+      
+      // ═══ v33.9: AUTO-DÉTECTION PILOTE POUR ENREGISTREMENT PRÉ-COURSE ═══
+      // Quand un pilote est détecté en piste, le pré-sélectionner automatiquement
+      useEffect(() => {
+        // Ne pas changer si déjà en enregistrement ou si pilote déjà sélectionné manuellement
+        if (isRecordingRef || !pilots || pilots.length === 0) return;
+        
+        // Chercher un pilote ON_TRACK via DriverMatchingSystem
+        if (window.AGP_DriverMatching) {
+          for (const pilot of pilots) {
+            if (!pilot.id || pilot.active === false) continue;
+            const status = window.AGP_DriverMatching.getPilotStatus(pilot.id);
+            if (status && status.id === 'on_track') {
+              // Pilote trouvé en piste → le sélectionner si pas déjà fait
+              if (!recordingPilot || recordingPilot.id !== pilot.id) {
+                setRecordingPilot(pilot);
+                window.AGP_Logger?.info('Auto-sélection pilote pour enregistrement', { pilot: pilot.name });
+              }
+              break;
+            }
+          }
+        }
+        
+        // Fallback: chercher dans telemetryData
+        if (!recordingPilot && telemetryData && selectedTeam) {
+          const teamData = telemetryData[selectedTeam];
+          if (teamData && teamData.driverName) {
+            // Chercher le pilote correspondant au nom SimHub
+            const matchedPilot = pilots.find(p => {
+              if (!p.name) return false;
+              const simName = (teamData.driverName || '').toLowerCase();
+              const planName = p.name.toLowerCase();
+              return simName.includes(planName) || planName.includes(simName) || 
+                     simName.substring(0, 4) === planName.substring(0, 4);
+            });
+            if (matchedPilot) {
+              setRecordingPilot(matchedPilot);
+              window.AGP_Logger?.info('Auto-sélection pilote via telemetry', { pilot: matchedPilot.name, simhub: teamData.driverName });
+            }
+          }
+        }
+      }, [pilots, telemetryData, selectedTeam, isRecordingRef]);
       
       // Afficher WhatsNew au premier lancement
       // v32.8: Popup "Quoi de neuf" désactivé (utilisateur peut le voir via menu Aide si besoin)
@@ -7738,19 +7819,41 @@
                   }
                   return null;
                 })(),
-                // S3 calculé = temps au tour - S2_cumulatif (S2 cumulatif = fin S2)
+                // S3 calculé = temps au tour - S1 - S2 (avec détection robuste du format)
+                // v33.6 FIX: Lecture directe de S3 si disponible + calcul amélioré
                 sector3: (() => {
+                  // 1. Essayer de lire S3 directement depuis les données brutes
+                  const s3Direct = r.sectors?.sector3Last ?? r.sector3;
+                  if (s3Direct > 0 && s3Direct < 120) return s3Direct;
+                  
+                  // 2. Calculer à partir de S1, S2 et temps au tour
                   const s1 = r.sectors?.sector1Last ?? r.sector1;
                   const s2raw = r.sectors?.sector2Last ?? r.sector2;
                   const lapTime = r.lastLapTimeSec ?? r.lastLapSec;
+                  
                   if (s1 > 0 && s2raw > 0 && lapTime > 0) {
-                    // Si S2 est cumulatif (> S1*1.8), S3 = lapTime - S2
-                    // Sinon (S2 individuel), S3 = lapTime - S1 - S2
-                    const isCumulative = s2raw > s1 * 1.8;
-                    const s3 = isCumulative 
-                      ? (lapTime - s2raw)  // S2 cumulatif
-                      : (lapTime - s1 - s2raw); // S2 individuel
-                    return Math.max(0, s3);
+                    // Détection format S2: cumulatif si S2 > S1 * 1.5 ET S2 proche du temps tour
+                    const isCumulative = s2raw > s1 * 1.5 && s2raw < lapTime * 0.95;
+                    
+                    let s3;
+                    if (isCumulative) {
+                      // S2 est cumulatif (temps total à la fin de S2)
+                      s3 = lapTime - s2raw;
+                    } else {
+                      // S2 est individuel (juste le temps du secteur 2)
+                      s3 = lapTime - s1 - s2raw;
+                    }
+                    
+                    // Validation: S3 doit être raisonnable (entre 5s et 60s typiquement)
+                    if (s3 > 0 && s3 < 120 && s3 < lapTime * 0.8) {
+                      return s3;
+                    }
+                    
+                    // Si le calcul semble faux, essayer l'autre méthode
+                    const s3Alt = isCumulative ? (lapTime - s1 - s2raw) : (lapTime - s2raw);
+                    if (s3Alt > 0 && s3Alt < 120 && s3Alt < lapTime * 0.8) {
+                      return s3Alt;
+                    }
                   }
                   return null;
                 })(),
@@ -7770,14 +7873,36 @@
                   return null;
                 })(),
                 // Best S3 calculé depuis best lap
+                // v33.6 FIX: Même logique améliorée que sector3
                 bestSector3: (() => {
+                  // 1. Essayer de lire bestS3 directement
+                  const s3Direct = r.sectors?.sector3 ?? r.bestSector3;
+                  if (s3Direct > 0 && s3Direct < 120) return s3Direct;
+                  
+                  // 2. Calculer à partir des best sectors et best lap
                   const s1 = r.sectors?.sector1 ?? r.bestSector1;
                   const s2raw = r.sectors?.sector2 ?? r.bestSector2;
                   const bestLap = r.bestLapTimeSec ?? r.bestLapSec;
+                  
                   if (s1 > 0 && s2raw > 0 && bestLap > 0) {
-                    const isCumulative = s2raw > s1 * 1.8;
-                    const s3 = isCumulative ? (bestLap - s2raw) : (bestLap - s1 - s2raw);
-                    return Math.max(0, s3);
+                    const isCumulative = s2raw > s1 * 1.5 && s2raw < bestLap * 0.95;
+                    
+                    let s3;
+                    if (isCumulative) {
+                      s3 = bestLap - s2raw;
+                    } else {
+                      s3 = bestLap - s1 - s2raw;
+                    }
+                    
+                    if (s3 > 0 && s3 < 120 && s3 < bestLap * 0.8) {
+                      return s3;
+                    }
+                    
+                    // Essayer l'autre méthode si le résultat semble incorrect
+                    const s3Alt = isCumulative ? (bestLap - s1 - s2raw) : (bestLap - s2raw);
+                    if (s3Alt > 0 && s3Alt < 120 && s3Alt < bestLap * 0.8) {
+                      return s3Alt;
+                    }
                   }
                   return null;
                 })(),
@@ -8153,69 +8278,72 @@
                     const stintData = currentStintData[carNum];
                     const carCollected = collectedData?.[carNum];
                     
-                    if (stintData && carCollected && carCollected.laps && carCollected.laps.length > 0) {
-                      // Calculer moyenne des 25 derniers tours (ou moins si pas assez)
-                      const recentLaps = carCollected.laps.slice(-25);
-                      const avgLapTimeSec = recentLaps.reduce((a, l) => a + l.time, 0) / recentLaps.length;
-                      const lapsInStint = (carData.currentLap || 0) - stintData.startLap;
+                    // v33.7: Amélioration auto-remplissage - fonctionne même sans tours collectés
+                    // Méthode 1: Calcul via tours collectés (précis)
+                    // Méthode 2: Calcul via timestamp pit-out (fallback)
+                    let realStintTime = null;
+                    let stintDurationSec = 0;
+                    let lapsInStint = 0;
+                    let avgLapTimeSec = 0;
+                    
+                    if (stintData) {
+                      lapsInStint = (carData.currentLap || 0) - (stintData.startLap || 0);
                       
-                      // Temps total du stint en secondes
-                      const stintDurationSec = lapsInStint * avgLapTimeSec;
-                      
-                      // Formater en mm:ss
-                      const stintMins = Math.floor(stintDurationSec / 60);
-                      const stintSecs = Math.floor(stintDurationSec % 60);
-                      const realStintTime = stintMins + ':' + stintSecs.toString().padStart(2, '0');
-                      
-                      // Calculer l'incident (on compare avec le temps prévu plus tard)
-                      const pitInTime = new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', hour12: false });
-                      // v32.5: incidentTime sera calculé dans onStintUpdate (MainApp)
-                      // Ici on met 0, le calcul réel se fait avec le temps prévu du planning
-                      const incidentTime = 0;
-                      
-                      // Envoyer les données au parent pour pré-remplir le planning
-                      if (onStintUpdate) {
-                        onStintUpdate({
-                          carNum,
-                          teamName: carData.teamName,
-                          driverName: stintData.driverName,
-                          lapsCompleted: lapsInStint,
-                          avgLapTimeSec,
-                          realStintTime,
-                          stintDurationSec,
-                          pitOutTime: stintData.pitOutTime,
-                          pitInTime,
-                          timestamp: now
-                        });
+                      if (carCollected && carCollected.laps && carCollected.laps.length > 0) {
+                        // Méthode 1: Moyenne des tours collectés
+                        const recentLaps = carCollected.laps.slice(-25);
+                        avgLapTimeSec = recentLaps.reduce((a, l) => a + l.time, 0) / recentLaps.length;
+                        stintDurationSec = lapsInStint * avgLapTimeSec;
+                      } else if (stintData.startTime) {
+                        // Méthode 2: Temps écoulé depuis pit-out
+                        stintDurationSec = Math.round((now - stintData.startTime) / 1000);
+                        avgLapTimeSec = lapsInStint > 0 ? stintDurationSec / lapsInStint : 120; // Fallback 2 min/tour
+                        window.AGP_Logger?.info('Auto-fill via elapsed time', { duration: stintDurationSec, laps: lapsInStint });
                       }
                       
-                      // ═══ AUTO-REMPLISSAGE PLANNING v29 ═══
-                      // UNIQUEMENT en mode COURSE (pas en entrainement)
-                      if (onStintUpdate && raceMode === 'race') {
-                        const realTimeSec = lapsInStint * avgLapTimeSec;
-                        
+                      if (stintDurationSec > 0) {
+                        // Formater en mm:ss
+                        const stintMins = Math.floor(stintDurationSec / 60);
+                        const stintSecs = Math.floor(stintDurationSec % 60);
+                        realStintTime = stintMins + ':' + stintSecs.toString().padStart(2, '0');
+                      }
+                    }
+                    
+                    if (stintData && realStintTime) {
+                      // v33.7: Calcul heure d'entrée pit
+                      const pitInTime = new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', hour12: false });
+                      
+                      // ═══ AUTO-REMPLISSAGE PLANNING v33.7 ═══
+                      // Fonctionne en mode COURSE et ENTRAINEMENT
+                      if (onStintUpdate) {
                         onStintUpdate({
                           carNum: carNum,
-                          teamName: teamName,
+                          teamName: carData.teamName || teamName,
                           driverName: stintData.driverName,
                           realStintTime: realStintTime,
-                          stintDurationSec: realTimeSec,
+                          stintDurationSec: stintDurationSec,
                           lapsCompleted: lapsInStint,
                           avgLapTimeSec: avgLapTimeSec,
-                          pitInTime: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
+                          pitInTime: pitInTime,
+                          pitOutTime: stintData.pitOutTime,
+                          timestamp: now
                         });
                         
-                        window.AGP_Logger?.info('Auto-fill envoyé', { team: teamName, time: realStintTime });
+                        window.AGP_Logger?.info('Auto-fill envoyé', { 
+                          team: carData.teamName || teamName, 
+                          time: realStintTime, 
+                          laps: lapsInStint,
+                          mode: raceMode 
+                        });
                       }
                       
                       setSuggestions(prev => [...prev.filter(s => !s.type.startsWith('PIT_')), {
                         type: 'PIT_IN_' + carNum,
-                        priority: incidentTime > 30 ? 'HIGH' : 'WARNING',
-                        message: `🔴 ${stintData.driverName} rentre - ${lapsInStint}t, ${realStintTime}` + (incidentTime > 0 ? ` ⚠️ +${incidentTime}s incident détecté!` : ''),
+                        priority: 'WARNING',
+                        message: `🔴 ${stintData.driverName} rentre - ${lapsInStint}t, ${realStintTime}`,
                         timestamp: now,
                         autoFilled: true,
-                        realStintTime: realStintTime,
-                        incidentTime: incidentTime
+                        realStintTime: realStintTime
                       }]);
                       
                       // ═══ v32: LOG PIT IN DANS EVENTS ═══
@@ -8370,10 +8498,32 @@
             }
             // v32.9: Pas de log si météo absente (bruit inutile)
             
-            // ═══ v32.5: MISE À JOUR DÉGÂTS VÉHICULE ═══
-            const carWithDamage = Object.values(rawData).find(car => car && car.damage);
-            if (carWithDamage && carWithDamage.damage) {
-              const dmg = carWithDamage.damage;
+            // ═══ v33.7: MISE À JOUR DÉGÂTS VÉHICULE (format amélioré) ═══
+            // Chercher soit un objet damage, soit des champs individuels
+            const carWithDamage = Object.values(rawData).find(car => 
+              car && (car.damage || car.damageAero !== undefined || car.dmgAero !== undefined)
+            );
+            if (carWithDamage) {
+              let dmg;
+              if (carWithDamage.damage) {
+                // Format objet damage
+                dmg = carWithDamage.damage;
+              } else {
+                // Format champs individuels (damageAero, damageEngine, etc.)
+                dmg = {
+                  front: carWithDamage.damageFront || carWithDamage.dmgFront || carWithDamage.frontDamage || 0,
+                  rear: carWithDamage.damageRear || carWithDamage.dmgRear || carWithDamage.rearDamage || 0,
+                  left: carWithDamage.damageLeft || carWithDamage.dmgLeft || carWithDamage.leftDamage || 0,
+                  right: carWithDamage.damageRight || carWithDamage.dmgRight || carWithDamage.rightDamage || 0,
+                  aero: carWithDamage.damageAero || carWithDamage.dmgAero || carWithDamage.aeroDamage || 0,
+                  engine: carWithDamage.damageEngine || carWithDamage.dmgEngine || carWithDamage.engineDamage || 0,
+                  suspension: carWithDamage.damageSuspension || carWithDamage.dmgSuspension || carWithDamage.suspensionDamage || 0,
+                };
+                // Calculer total
+                dmg.total = Math.max(dmg.front, dmg.rear, dmg.left, dmg.right, dmg.aero, dmg.engine, dmg.suspension);
+                dmg.hasDamage = dmg.total > 5;
+              }
+              
               setVehicleDamage({
                 front: dmg.front || 0,
                 rear: dmg.rear || 0,
@@ -8726,15 +8876,23 @@
                         </p>
                         <div style={{display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'flex-end'}}>
                           <div>
-                            <label style={{fontSize: '10px', color: 'var(--text-muted)'}}>Pilote</label>
+                            <label style={{fontSize: '10px', color: 'var(--text-muted)'}}>Pilote {recordingPilot && <span style={{color: 'var(--green)'}}>(✓ auto-détecté)</span>}</label>
                             <select 
-                              style={{display: 'block', padding: '8px', borderRadius: '6px', background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text)', minWidth: '150px'}}
+                              style={{display: 'block', padding: '8px', borderRadius: '6px', background: recordingPilot ? 'rgba(0,255,102,0.1)' : 'var(--bg-input)', border: recordingPilot ? '2px solid var(--green)' : '1px solid var(--border)', color: 'var(--text)', minWidth: '150px'}}
+                              value={recordingPilot?.id || ''}
                               onChange={e => setRecordingPilot(pilots?.find(p => p.id === e.target.value))}
                             >
                               <option value="">-- Choisir --</option>
-                              {pilots?.filter(p => p.active !== false).map(p => (
-                                <option key={p.id} value={p.id}>{p.name}</option>
-                              ))}
+                              {pilots?.filter(p => p.active !== false).map(p => {
+                                // v33.9: Indiquer si le pilote est détecté en piste
+                                const status = window.AGP_DriverMatching?.getPilotStatus(p.id);
+                                const isOnTrack = status && status.id === 'on_track';
+                                return (
+                                  <option key={p.id} value={p.id}>
+                                    {isOnTrack ? '🟢 ' : ''}{p.name}{isOnTrack ? ' (en piste)' : ''}
+                                  </option>
+                                );
+                              })}
                             </select>
                           </div>
                           <div>
@@ -9374,14 +9532,21 @@
                         if (predictionMode === 'pilote') {
                           return (
                             <div style={{display: 'flex', flexDirection: 'column', gap: '6px'}}>
-                              {pilotes.map((pilote, idx) => {
+                              {pilotes.map((piloteItem, idx) => {
+                                // v33.8 FIX: piloteItem peut être un objet {id, name} ou une string
+                                const pilote = typeof piloteItem === 'string' ? piloteItem : (piloteItem?.name || piloteItem?.pilotName || 'Pilote ' + (idx + 1));
+                                
                                 // Trouver le temps de référence du pilote (chercher dans pilotComboTimes)
                                 let pilotLapTime = 108; // défaut
                                 let pilotConso = consoParTour;
                                 
+                                // v33.8 FIX: Vérifier que pilote est bien une string avant toLowerCase
+                                const piloteStr = String(pilote || '').toLowerCase();
+                                const pilotePrefix = piloteStr.substring(0, 4);
+                                
                                 // Chercher la clé qui contient le nom du pilote
                                 Object.keys(pilotComboTimes).forEach(key => {
-                                  if (key.toLowerCase().includes(pilote.toLowerCase().substring(0, 4))) {
+                                  if (pilotePrefix && key.toLowerCase().includes(pilotePrefix)) {
                                     const timeStr = pilotComboTimes[key];
                                     // Parser "1:45.123" en secondes
                                     if (timeStr) {
@@ -9394,7 +9559,7 @@
                                 });
                                 
                                 Object.keys(pilotComboCons).forEach(key => {
-                                  if (key.toLowerCase().includes(pilote.toLowerCase().substring(0, 4))) {
+                                  if (pilotePrefix && key.toLowerCase().includes(pilotePrefix)) {
                                     pilotConso = parseFloat(pilotComboCons[key]) || consoParTour;
                                   }
                                 });
@@ -11235,7 +11400,7 @@
               console.log('✅ [MainApp] Références appliquées à l\'équipe:', teams[activeIdx]?.name);
             }}
             onStintUpdate={(stintData) => {
-              // ═══ AUTO-REMPLISSAGE DES DONNÉES DE RELAIS ═══
+              // ═══ v33.7: AUTO-REMPLISSAGE + VALIDATION GROS DÉCALAGES ═══
               // Trouver l'équipe correspondante
               const teamIdx = teams.findIndex(t => {
                 // Matcher par numéro de voiture ou nom d'équipe
@@ -11271,30 +11436,64 @@
               const reelSec = stintData.stintDurationSec || 0;
               const incidentSec = Math.max(0, Math.round(reelSec - prevuSec));
               
-              // Mettre à jour le stint avec les données live
-              const newStints = [...targetTeam.stints];
-              newStints[finalIdx] = {
-                ...currentStint,
-                realStintTime: stintData.realStintTime,
-                incidentTime: incidentSec > 10 ? incidentSec : currentStint.incidentTime || 0, // Seuil 10s pour éviter les petites variations
-                laps: stintData.lapsCompleted || currentStint.laps,
-                // Ne pas mettre completed: true - l'utilisateur valide manuellement
+              // v33.7: Fonction pour appliquer les changements
+              const applyUpdate = () => {
+                const newStints = [...targetTeam.stints];
+                newStints[finalIdx] = {
+                  ...currentStint,
+                  realStintTime: stintData.realStintTime,
+                  incidentTime: incidentSec > 10 ? incidentSec : currentStint.incidentTime || 0,
+                  laps: stintData.lapsCompleted || currentStint.laps,
+                  autoFilled: true, // Marquer comme auto-rempli
+                };
+                
+                // Mettre à jour l'équipe
+                setTeams(prev => {
+                  const updated = [...prev];
+                  updated[teamIdx] = { ...targetTeam, stints: newStints, lastModified: Date.now() };
+                  return updated;
+                });
+                
+                // Sauvegarder dans Firebase
+                if (canEdit || isCreator) {
+                  const teamToSave = { ...targetTeam, stints: newStints, lastModified: Date.now() };
+                  saveTeamToFirebase(teamToSave);
+                }
+                
+                window.AGP_Logger?.info('Auto-remplissage relais', { 
+                  stint: finalIdx + 1, 
+                  team: targetTeam.name, 
+                  time: stintData.realStintTime, 
+                  incident: incidentSec,
+                  validated: true
+                });
               };
               
-              // Mettre à jour l'équipe
-              setTeams(prev => {
-                const updated = [...prev];
-                updated[teamIdx] = { ...targetTeam, stints: newStints, lastModified: Date.now() };
-                return updated;
-              });
-              
-              // Sauvegarder dans Firebase
-              if (canEdit || isCreator) {
-                const teamToSave = { ...targetTeam, stints: newStints, lastModified: Date.now() };
-                saveTeamToFirebase(teamToSave);
+              // v33.7: Si décalage > 30s, demander confirmation
+              const BIG_GAP_THRESHOLD = 30; // secondes
+              if (incidentSec > BIG_GAP_THRESHOLD && prevuSec > 0) {
+                const formatTime = (s) => Math.floor(s/60) + ':' + (s%60).toString().padStart(2,'0');
+                setConfirm({
+                  title: '⚠️ GROS DÉCALAGE DÉTECTÉ',
+                  message: `Relais ${finalIdx + 1} (${stintData.driverName}):\n\n` +
+                    `• Temps prévu: ${formatTime(prevuSec)}\n` +
+                    `• Temps réel: ${stintData.realStintTime}\n` +
+                    `• Décalage: +${incidentSec}s\n\n` +
+                    `Appliquer les données et actualiser le planning?\n` +
+                    `(Cela ajoutera ${incidentSec}s d'incident)`,
+                  onConfirm: () => {
+                    applyUpdate();
+                    setConfirm(null);
+                  },
+                  onCancel: () => {
+                    window.AGP_Logger?.info('Auto-remplissage refusé par utilisateur', { team: targetTeam.name });
+                    setConfirm(null);
+                  }
+                });
+              } else {
+                // Décalage < 30s → appliquer directement
+                applyUpdate();
               }
-              
-              window.AGP_Logger?.info('Auto-remplissage relais', { stint: finalIdx + 1, team: targetTeam.name, time: stintData.realStintTime, incident: incidentSec });
             }}
             onAddIncident={(carNum, seconds, incidentType = 'FCY') => {
               // ═══ AJOUT INCIDENT AU PLANNING (FCY/SC/PIT PROLONGÉ) ═══
