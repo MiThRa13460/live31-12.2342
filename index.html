@@ -2,38 +2,31 @@
 <!--
   ═══════════════════════════════════════════════════════════════════
   TEAM AGP - Endurance Strategy Dashboard
-  v33.9 - Auto-détection Pilote Pré-course
+  v33.15 - Header redesigné + Fullscreen + Préférences persistantes
   ═══════════════════════════════════════════════════════════════════
   
-  CHANGELOG v33.9 (01/01/2026):
-  - NEW: Auto-détection du pilote en piste pour enregistrement pré-course
-  - NEW: Pilote auto-sélectionné si détecté ON_TRACK par SimHub
-  - NEW: Dropdown indique les pilotes en piste avec 🟢
-  - FIX: L'association SimHub ↔ Planning est automatique (Lucas = Lucas)
+  CHANGELOG v33.15 (01/01/2026):
+  - REDESIGN: Header propre en 2 lignes (Ligne 1: Logo/Météo/Chronos, Ligne 2: Nav/Actions)
+  - NEW: Bouton plein écran (⛶) pour masquer la barre navigateur
+  - NEW: Préférences UI sauvegardées automatiquement (localStorage)
+        → Page active, alertes ON/OFF, tooltips ON/OFF
+  - FIX: Erreur "raceSessionTime is not defined" dans MainApp
+  - CONFIRM: Météo rF2 LIVE = vraies données session via SimHub
   
-  CHANGELOG v33.8:
-  - FIX: Page Prédiction Pilote - "pilote.toLowerCase is not a function"
-  - FIX: Gestion pilote comme objet {id, name} ou string
+  CHANGELOG v33.14:
+  - NEW: Chrono actif en toute session (Practice, Warmup, Qualif)
+  - NEW: Estimation dégâts indirects via températures
   
-  CHANGELOG v33.7:
-  - FIX: Auto-remplissage fonctionne même sans tours collectés
-  - NEW: Validation manuelle obligatoire si décalage > 30s
-  
-  CHANGELOG v33.6:
-  - FIX: getTyreWear() gère formats 0-1 (décimal), négatif et 0-100
-  - FIX: sector3 calcul amélioré avec lecture directe si disponible
-  
-  HISTORIQUE:
-  - v33.5: Plugin v3.2.9 complet, HTML 12k lignes
-  - v33.4: Calcul durée pit stop réelle
-  - v33.3: Détection automatique pilote actif
+  CHANGELOG v33.13:
+  - FIX: Temps stint RELAIS EN COURS (fallback sessionElapsed)
+  - FIX: Toggle 💬 OFF désactive TOUTES les bulles
   ═══════════════════════════════════════════════════════════════════
 -->
 <html lang="fr">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>TEAM AGP - Endurance Strategy 24h v33.9</title>
+  <title>TEAM AGP - Endurance Strategy 24h v33.12</title>
   <script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
@@ -325,8 +318,9 @@
     table { overflow: visible !important; }
     th, td { overflow: visible !important; position: relative; }
     .card { overflow: visible !important; }
-    .help-mode .help-tooltip[data-help]:hover::after, .help-mode .help-tooltip[data-help]:hover::before { opacity: 1; }
-    @media (hover: none) { .help-mode .help-tooltip[data-help]:active::after, .help-mode .help-tooltip[data-help]:active::before { opacity: 1; } }
+    /* v33.12: Supprimé .help-mode standalone - utilise uniquement body.tooltips-enabled */
+    body.tooltips-enabled .help-mode .help-tooltip[data-help]:hover::after, body.tooltips-enabled .help-mode .help-tooltip[data-help]:hover::before { opacity: 1; }
+    @media (hover: none) { body.tooltips-enabled .help-tooltip[data-help]:active::after, body.tooltips-enabled .help-tooltip[data-help]:active::before { opacity: 1; } }
     .help-toggle { display: flex; align-items: center; gap: 4px; padding: 4px 8px; border-radius: 6px; font-size: 10px; font-weight: 600; cursor: pointer; transition: all 0.2s; border: none; }
     .help-toggle.active { background: linear-gradient(135deg, #00ccaa, #00aa88); color: #fff; box-shadow: 0 0 10px rgba(0,204,170,0.4); }
     .help-toggle:not(.active) { background: rgba(0,0,0,0.3); color: var(--text-muted); }
@@ -6565,7 +6559,10 @@
       const setPilotStatus = externalSetPilotStatus || setLocalPilotStatus;
       
       // États
-      const [activePage, setActivePage] = useState('equipe');
+      // v33.15: Préférences UI persistantes via localStorage
+      const [activePage, setActivePage] = useState(() => {
+        try { return localStorage.getItem('AGP_Pref_activePage') || 'equipe'; } catch { return 'equipe'; }
+      });
       const [selectedTeam, setSelectedTeam] = useState(teamCarNumber);
       const [telemetryData, setTelemetryData] = useState({});
       
@@ -6659,14 +6656,16 @@
       const formatLapTime = (t) => { if (!t || t.includes('--')) return '--:--.---'; let clean = t.replace(/^00:/, ''); const m = clean.match(/(\d+):(\d+)\.(\d{3})/); return m ? parseInt(m[1]) + ':' + m[2] + '.' + m[3] : clean.substring(0,9); };
       const formatChrono = (s) => { if (!s && s !== 0) return '--:--:--'; const h = Math.floor(Math.abs(s)/3600); const m = Math.floor((Math.abs(s)%3600)/60); const sec = Math.floor(Math.abs(s)%60); return h.toString().padStart(2,'0')+':'+m.toString().padStart(2,'0')+':'+sec.toString().padStart(2,'0'); };
       const getTyreWear = (w) => { 
-        // v33.6 FIX: Gestion robuste des formats de données pneus
+        // v33.10 FIX: Le plugin envoie % USURE, on affiche % RESTANT
+        // Plugin v3.3.0: (1 - wear) * 100 où wear=0.02 donne 98 (FAUX car rF2 wear=0.98 = 98% restant)
+        // Donc on doit INVERSER: 100 - valeur_reçue
         if (w === undefined || w === null) return 100; 
-        // Si valeur négative (format usure: -5 = 5% d'usure = 95% restant)
         if (w < 0) return Math.min(100, Math.max(0, 100 + w));
-        // Si valeur entre 0 et 1.5 (format décimal: 0.95 = 95% restant)
-        if (w > 0 && w <= 1.5) return Math.round(w * 100);
-        // Sinon valeur directe (format %: 95 = 95% restant)
-        return Math.min(100, Math.max(0, Math.round(w))); 
+        // Si valeur 0-1.5 (décimal d'usure) → inverser: 100 - (w * 100)
+        if (w > 0 && w <= 1.5) return Math.round(100 - (w * 100));
+        // Si valeur 0-100 (% d'usure) → inverser: 100 - w
+        if (w >= 0 && w <= 100) return Math.min(100, Math.max(0, Math.round(100 - w)));
+        return 100; 
       };
       const getTyreColor = (w) => { const wear = getTyreWear(w); return wear >= 70 ? 'var(--green)' : wear >= 40 ? 'var(--orange)' : 'var(--red)'; };
       
@@ -6693,17 +6692,41 @@
       });
       
       // v32.5: Phase de course (pour affichage)
+      // v33.14: Ajout isSessionRunning et sessionType pour chrono en Practice/Warmup/Qualif
       const [racePhaseInfo, setRacePhaseInfo] = useState({
         phase: 'UNKNOWN',
         isGreenFlag: false,
         isFormationLap: false,
-        isRaceStarted: false
+        isRaceStarted: false,
+        isSessionRunning: false,
+        sessionType: ''
       });
       
       // État des alertes
       const [activeAlerts, setActiveAlerts] = useState([]);
-      const [showAlertsPanel, setShowAlertsPanel] = useState(false); // v32: Panneau alertes désactivé par défaut
-      const [showTooltips, setShowTooltips] = useState(false); // v32: Bulles d'aide désactivées par défaut
+      // v33.15: Préférences UI persistantes
+      const [showAlertsPanel, setShowAlertsPanel] = useState(() => {
+        try { return localStorage.getItem('AGP_Pref_showAlerts') === 'true'; } catch { return false; }
+      });
+      const [showTooltips, setShowTooltips] = useState(() => {
+        try { return localStorage.getItem('AGP_Pref_showTooltips') === 'true'; } catch { return false; }
+      });
+      
+      // v33.15: État plein écran
+      const [isFullscreen, setIsFullscreen] = useState(false);
+      const toggleFullscreen = () => {
+        if (!document.fullscreenElement) {
+          document.documentElement.requestFullscreen().then(() => setIsFullscreen(true)).catch(() => {});
+        } else {
+          document.exitFullscreen().then(() => setIsFullscreen(false)).catch(() => {});
+        }
+      };
+      // Écouter les changements de fullscreen (Escape, etc.)
+      useEffect(() => {
+        const handler = () => setIsFullscreen(!!document.fullscreenElement);
+        document.addEventListener('fullscreenchange', handler);
+        return () => document.removeEventListener('fullscreenchange', handler);
+      }, []);
       
       // État de la stratégie suggérée
       const [strategySuggestion, setStrategySuggestion] = useState(null);
@@ -6785,11 +6808,21 @@
       //   }
       // }, []);
       
-      // v32: Toggle tooltips class on body
+      // v32: Toggle tooltips class on body + v33.15: Sauvegarde préférences
       useEffect(() => { 
         if (showTooltips) document.body.classList.add('tooltips-enabled'); 
-        else document.body.classList.remove('tooltips-enabled'); 
+        else document.body.classList.remove('tooltips-enabled');
+        try { localStorage.setItem('AGP_Pref_showTooltips', showTooltips); } catch {}
       }, [showTooltips]);
+      
+      // v33.15: Sauvegarder préférences UI
+      useEffect(() => {
+        try { localStorage.setItem('AGP_Pref_showAlerts', showAlertsPanel); } catch {}
+      }, [showAlertsPanel]);
+      
+      useEffect(() => {
+        try { localStorage.setItem('AGP_Pref_activePage', activePage); } catch {}
+      }, [activePage]);
       
       // Charger les références au démarrage
       useEffect(() => {
@@ -8416,20 +8449,33 @@
                 }
               }
               
-              // ═══ v33.2 FIX: SYNC CHRONO MÊME EN YELLOW FLAG ═══
-              // La course est considérée démarrée si:
-              // 1. isRaceStarted === true (GREEN FLAG)
-              // 2. OU si currentLap >= 1 (au moins 1 tour fait = course en cours)
-              // 3. OU si sessionElapsed > 120 ET on a des données valides
+              // ═══ v33.14 FIX: CHRONO EN TOUTES SESSIONS (Practice, Warmup, Qualif, Race) ═══
+              // Récupérer le type de session depuis les données véhicule
+              const carWithVehicle = Object.values(rawData).find(car => car?.vehicle?.sessionType);
+              const sessionType = carWithVehicle?.vehicle?.sessionType?.toLowerCase() || '';
+              
+              // Session non-race: Practice, Warmup, Qualif → chrono dès sessionElapsed > 30
+              const isNonRaceSession = sessionType.includes('practice') || 
+                                       sessionType.includes('warmup') || 
+                                       sessionType.includes('warm up') ||
+                                       sessionType.includes('qualifying') ||
+                                       sessionType.includes('qualif');
+              
+              // La session est active si:
+              // 1. isRaceStarted === true (GREEN FLAG en course)
+              // 2. OU session non-race avec sessionElapsed > 30
+              // 3. OU currentLap >= 1 (au moins 1 tour fait)
+              // 4. OU sessionElapsed > 120 (sécurité)
               const hasLaps = Object.values(rawData).some(car => car?.currentLap >= 1);
-              const raceEffectivelyStarted = isRaceStarted || hasLaps || (sessionElapsed > 120);
+              const sessionActive = isNonRaceSession && sessionElapsed > 30;
+              const raceEffectivelyStarted = isRaceStarted || sessionActive || hasLaps || (sessionElapsed > 120);
               
               if (sessionElapsed > 0 && onSyncChrono && externalChronoState && raceEffectivelyStarted) {
-              // v33.2: Log la détection de course démarrée
+              // v33.14: Log la détection de session active
               if (raceEffectivelyStarted && !window._loggedRaceStarted) {
-                window.AGP_Logger?.info('🏁 Course détectée comme démarrée', { 
-                  isRaceStarted, hasLaps, sessionElapsed: Math.floor(sessionElapsed),
-                  phase: currentPhase 
+                window.AGP_Logger?.info('🏁 Session détectée comme active', { 
+                  isRaceStarted, sessionActive, hasLaps, sessionElapsed: Math.floor(sessionElapsed),
+                  phase: currentPhase, sessionType: sessionType || 'unknown'
                 });
                 window._loggedRaceStarted = true;
               }
@@ -8553,15 +8599,81 @@
               }
             }
             
+            // ═══ v33.14: ESTIMATION DÉGÂTS INDIRECTS (fallback si pas de données directes) ═══
+            // Si aucun dégât détecté mais indicateurs anormaux, estimer les dégâts
+            if (!carWithDamage || vehicleDamage.total < 5) {
+              const carData = Object.values(rawData)[0];
+              if (carData) {
+                let estimatedDamage = { front: 0, rear: 0, left: 0, right: 0, aero: 0, engine: 0, suspension: 0, total: 0, hasDamage: false };
+                let damageIndicators = [];
+                
+                // 1. Température moteur anormale (>110°C = problème)
+                const engineTemp = carData.engineTemp || carData.waterTemp || carData.temperatures?.engine || 0;
+                if (engineTemp > 120) {
+                  estimatedDamage.engine = Math.min(100, Math.round((engineTemp - 100) * 2));
+                  damageIndicators.push(`🌡️ Moteur ${engineTemp}°C`);
+                } else if (engineTemp > 110) {
+                  estimatedDamage.engine = Math.min(50, Math.round((engineTemp - 100) * 1.5));
+                }
+                
+                // 2. Température huile (>130°C = critique)
+                const oilTemp = carData.oilTemp || carData.temperatures?.oil || 0;
+                if (oilTemp > 140) {
+                  estimatedDamage.engine += Math.min(50, Math.round((oilTemp - 120) * 1.5));
+                  damageIndicators.push(`🛢️ Huile ${oilTemp}°C`);
+                }
+                
+                // 3. Vibrations/oscillations direction → dégâts suspension
+                // (basé sur écart entre angle volant et angle roues si disponible)
+                
+                // 4. Calculer total estimé
+                estimatedDamage.total = Math.min(100, Math.round(
+                  (estimatedDamage.engine + estimatedDamage.suspension + estimatedDamage.aero) / 3
+                ));
+                estimatedDamage.hasDamage = estimatedDamage.total > 10;
+                
+                // Mettre à jour si estimation supérieure aux dégâts directs
+                if (estimatedDamage.total > vehicleDamage.total) {
+                  setVehicleDamage(prev => ({
+                    ...prev,
+                    engine: Math.max(prev.engine, estimatedDamage.engine),
+                    total: Math.max(prev.total, estimatedDamage.total),
+                    hasDamage: prev.hasDamage || estimatedDamage.hasDamage,
+                    isEstimated: true // Flag pour UI
+                  }));
+                  
+                  // Alerte si dégâts estimés significatifs
+                  if (estimatedDamage.hasDamage && damageIndicators.length > 0) {
+                    setSuggestions(prev => {
+                      const hasEstAlert = prev.some(s => s.type === 'DAMAGE_ESTIMATED');
+                      if (!hasEstAlert) {
+                        return [...prev, {
+                          type: 'DAMAGE_ESTIMATED',
+                          priority: 'WARNING',
+                          message: `⚠️ DÉGÂTS POSSIBLES (estimés): ${damageIndicators.join(', ')}`,
+                          timestamp: Date.now()
+                        }];
+                      }
+                      return prev;
+                    });
+                  }
+                }
+              }
+            }
+            
             // ═══ v32.5: MISE À JOUR PHASE DE COURSE ═══
             const carWithPhase = Object.values(rawData).find(car => car && car.racePhase);
             if (carWithPhase && carWithPhase.racePhase) {
               const rp = carWithPhase.racePhase;
+              // v33.14: Capturer aussi sessionType depuis vehicle
+              const sessionType = carWithPhase.vehicle?.sessionType || '';
               setRacePhaseInfo({
                 phase: rp.phase || 'UNKNOWN',
                 isGreenFlag: rp.isGreenFlag || false,
                 isFormationLap: rp.isFormationLap || false,
-                isRaceStarted: rp.isRaceStarted || false
+                isRaceStarted: rp.isRaceStarted || false,
+                isSessionRunning: rp.isSessionRunning || false,
+                sessionType: sessionType
               });
             }
           }
@@ -8715,120 +8827,145 @@
               </div>
             </div>
           ))}
-          <div style={{ background: 'linear-gradient(180deg, rgba(13,17,23,0.98) 0%, rgba(6,8,12,0.95) 100%)', borderBottom: '2px solid var(--blue)', padding: '8px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
-            <div style={{display: 'flex', alignItems: 'center', gap: '10px'}}>
-              <div style={{ width: '32px', height: '32px', background: 'linear-gradient(135deg, var(--blue), var(--green))', borderRadius: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: '800', fontSize: '10px', color: 'var(--bg)' }}>AGP</div>
-              <div>
-                <div style={{fontFamily: 'Orbitron, sans-serif', fontSize: '14px', fontWeight: '700', color: 'var(--blue)'}}>STRATEGY LIVE</div>
-                <div style={{fontSize: '8px', color: 'var(--text-dim)'}}>24H ENDURANCE</div>
-              </div>
-            </div>
+          {/* ═══════════════════════════════════════════════════════════════════════════ */}
+          {/* v33.15 REDESIGN: HEADER PROPRE EN 2 LIGNES                                 */}
+          {/* ═══════════════════════════════════════════════════════════════════════════ */}
+          <div style={{ background: 'linear-gradient(180deg, rgba(13,17,23,0.98) 0%, rgba(6,8,12,0.95) 100%)', borderBottom: '2px solid var(--blue)' }}>
             
-            {/* MÉTÉO - v32.5: Affiche la source (simhub ou simulée) */}
-            <span className="help-tooltip" data-help="MÉTÉO - Température air/piste, trajectoire (plus chaud sur la ligne de course), humidité. Orange/Rouge = attention aux conditions. Icône vert = données SimHub live.">
-              <div style={{display: 'flex', gap: '8px', alignItems: 'center', padding: '6px 12px', background: 'var(--bg-card)', borderRadius: '8px', border: meteo.source === 'simhub' ? '2px solid var(--green)' : '1px solid var(--border)'}}>
-                <span style={{fontSize: '20px'}}>{getMeteoIcon()}</span>
-                <div style={{display: 'flex', gap: '10px', fontSize: '10px'}}>
-                  <div><span style={{color: 'var(--text-dim)'}}>Air</span> <strong>{meteo.temp}°C</strong></div>
-                  <div><span style={{color: 'var(--text-dim)'}}>Piste</span> <strong style={{color: meteo.piste > 35 ? 'var(--orange)' : 'var(--text)'}}>{meteo.piste}°C</strong></div>
-                  <div style={{borderLeft:'1px solid var(--border)',paddingLeft:'6px'}}><span style={{color:'var(--cyan)'}}>Trajectoire</span> <strong style={{color: meteo.pisteTrajectoire > 40 ? 'var(--red)' : 'var(--orange)'}}>{meteo.pisteTrajectoire}°C</strong></div>
-                  <div><span style={{color: 'var(--text-dim)'}}>Humid.</span> <strong>{meteo.humidity}%</strong></div>
-                  {meteo.source === 'simhub' && <div style={{color:'var(--green)',fontSize:'8px',fontWeight:'700'}}>● LIVE</div>}
+            {/* ══════ LIGNE 1: LOGO + MÉTÉO + CHRONOS ══════ */}
+            <div style={{ padding: '8px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+              
+              {/* GAUCHE: Logo + Titre */}
+              <div style={{display: 'flex', alignItems: 'center', gap: '12px'}}>
+                <div style={{ width: '36px', height: '36px', background: 'linear-gradient(135deg, var(--blue), var(--green))', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: '800', fontSize: '11px', color: '#000' }}>AGP</div>
+                <div>
+                  <div style={{fontFamily: 'Orbitron, sans-serif', fontSize: '16px', fontWeight: '700', color: 'var(--blue)', letterSpacing: '1px'}}>STRATEGY LIVE</div>
+                  <div style={{fontSize: '9px', color: 'var(--text-muted)', letterSpacing: '2px'}}>24H ENDURANCE</div>
                 </div>
               </div>
-            </span>
-            
-            {/* v32.5: PHASE DE COURSE - Indicateur visuel */}
-            <span className="help-tooltip" data-help="PHASE - État actuel de la session. Le chrono se déclenche automatiquement au GREEN FLAG (pas pendant warmup ou tour de formation).">
-              <div style={{
-                padding: '6px 10px', 
-                borderRadius: '8px', 
-                fontSize: '10px', 
-                fontWeight: '700',
-                background: racePhaseInfo.isRaceStarted ? 'rgba(0,255,0,0.2)' : racePhaseInfo.isFormationLap ? 'rgba(255,255,0,0.2)' : 'rgba(100,100,100,0.2)',
-                border: racePhaseInfo.isRaceStarted ? '2px solid var(--green)' : '1px solid var(--border)',
-                color: racePhaseInfo.isRaceStarted ? 'var(--green)' : racePhaseInfo.isFormationLap ? 'var(--yellow)' : 'var(--text-muted)'
-              }}>
-                {racePhaseInfo.phase === 'GREEN_FLAG' ? '🟢 COURSE' : 
-                 racePhaseInfo.phase === 'FORMATION_LAP' ? '🟡 FORMATION' :
-                 racePhaseInfo.phase === 'STARTING' ? '🟡 DÉPART' :
-                 racePhaseInfo.phase === 'FCY' ? '🟡 FCY' :
-                 racePhaseInfo.phase === 'RECONNAISSANCE' ? '⚪ RECON' :
-                 racePhaseInfo.phase === 'SESSION_OVER' ? '🏁 FIN' :
-                 '⏳ ' + (racePhaseInfo.phase || 'ATTENTE')}
+              
+              {/* CENTRE: MÉTÉO rF2 (bien visible) */}
+              <div style={{display: 'flex', gap: '20px', alignItems: 'center', padding: '8px 20px', background: 'rgba(0,0,0,0.3)', borderRadius: '12px', border: meteo.source === 'simhub' ? '2px solid var(--green)' : '1px solid var(--border)'}}>
+                <span style={{fontSize: '28px'}}>{getMeteoIcon()}</span>
+                <div style={{display: 'grid', gridTemplateColumns: 'repeat(4, auto)', gap: '16px', fontSize: '11px'}}>
+                  <div style={{textAlign: 'center'}}>
+                    <div style={{color: 'var(--text-muted)', fontSize: '9px', marginBottom: '2px'}}>AIR</div>
+                    <div style={{fontWeight: '700', fontSize: '14px', color: 'var(--cyan)'}}>{meteo.temp}°C</div>
+                  </div>
+                  <div style={{textAlign: 'center'}}>
+                    <div style={{color: 'var(--text-muted)', fontSize: '9px', marginBottom: '2px'}}>PISTE</div>
+                    <div style={{fontWeight: '700', fontSize: '14px', color: meteo.piste > 35 ? 'var(--orange)' : 'var(--text)'}}>{meteo.piste}°C</div>
+                  </div>
+                  <div style={{textAlign: 'center'}}>
+                    <div style={{color: 'var(--cyan)', fontSize: '9px', marginBottom: '2px'}}>TRAJECTOIRE</div>
+                    <div style={{fontWeight: '700', fontSize: '14px', color: meteo.pisteTrajectoire > 40 ? 'var(--red)' : 'var(--orange)'}}>{meteo.pisteTrajectoire}°C</div>
+                  </div>
+                  <div style={{textAlign: 'center'}}>
+                    <div style={{color: 'var(--text-muted)', fontSize: '9px', marginBottom: '2px'}}>HUMIDITÉ</div>
+                    <div style={{fontWeight: '700', fontSize: '14px'}}>{meteo.humidity}%</div>
+                  </div>
+                </div>
+                {meteo.source === 'simhub' && <div style={{display: 'flex', alignItems: 'center', gap: '4px', color:'var(--green)', fontSize:'10px', fontWeight:'700'}}>
+                  <span style={{width: '8px', height: '8px', borderRadius: '50%', background: 'var(--green)', animation: 'pulse 1s infinite'}}></span> LIVE
+                </div>}
               </div>
-            </span>
-            
-            {/* ONGLETS */}
-            <div style={{display: 'flex', gap: '4px'}}>
-              <span className="help-tooltip" data-help="ÉQUIPE - Vue détaillée de votre équipe: position, temps, carburant, pneus, alertes pit">
-                <button onClick={() => setActivePage('equipe')} style={{ padding: '8px 16px', borderRadius: '6px', border: 'none', background: activePage === 'equipe' ? 'var(--blue)' : 'var(--bg-card)', color: activePage === 'equipe' ? '#fff' : 'var(--text-muted)', fontWeight: '600', fontSize: '12px', cursor: 'pointer' }}>🏎️ ÉQUIPE</button>
-              </span>
-              <span className="help-tooltip" data-help="COURSE - Vue globale: classement, météo, comparaison entre équipes, fil de course">
-                <button onClick={() => setActivePage('course')} style={{ padding: '8px 16px', borderRadius: '6px', border: 'none', background: activePage === 'course' ? 'var(--orange)' : 'var(--bg-card)', color: activePage === 'course' ? '#fff' : 'var(--text-muted)', fontWeight: '600', fontSize: '12px', cursor: 'pointer' }}>🏁 COURSE</button>
-              </span>
+              
+              {/* DROITE: CHRONOS */}
+              <div style={{display: 'flex', gap: '12px', alignItems: 'center'}}>
+                {/* Chrono course */}
+                {externalChronoState && (
+                  <div style={{textAlign: 'center', padding: '6px 16px', background: externalChronoState.isRunning ? 'rgba(0,255,102,0.15)' : 'rgba(100,100,100,0.2)', borderRadius: '10px', border: externalChronoState.isRunning ? '2px solid var(--green)' : '1px solid var(--border)'}}>
+                    <div style={{fontSize: '9px', color: 'var(--text-muted)', marginBottom: '2px'}}>⏱️ ÉCOULÉ</div>
+                    <div style={{fontFamily: 'JetBrains Mono', fontSize: '18px', fontWeight: '700', color: externalChronoState.isRunning ? 'var(--green)' : 'var(--text-muted)'}}>{formatChrono(externalChronoState.elapsed || 0)}</div>
+                  </div>
+                )}
+                
+                {/* Temps restant rF2 */}
+                {raceSessionTime !== null && raceSessionTime > 0 && (
+                  <div style={{textAlign: 'center', padding: '6px 16px', background: 'rgba(0,200,255,0.1)', borderRadius: '10px', border: '1px solid var(--cyan)'}}>
+                    <div style={{fontSize: '9px', color: 'var(--text-muted)', marginBottom: '2px'}}>🎮 RESTANT</div>
+                    <div style={{fontFamily: 'JetBrains Mono', fontSize: '18px', fontWeight: '700', color: 'var(--cyan)'}}>{formatChrono(raceSessionTime)}</div>
+                  </div>
+                )}
+                
+                {/* Heure */}
+                <div style={{textAlign: 'center', padding: '6px 12px'}}>
+                  <div style={{fontSize: '9px', color: 'var(--text-muted)', marginBottom: '2px'}}>HEURE</div>
+                  <div style={{fontFamily: 'JetBrains Mono', fontSize: '16px', fontWeight: '600', color: 'var(--text-muted)'}}>{heure.toLocaleTimeString('fr-FR')}</div>
+                </div>
+              </div>
             </div>
             
-            <div style={{display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap'}}>
-              {raceSessionTime !== null && onSyncChrono && <span className="help-tooltip" data-help="SYNC - Synchroniser le chrono avec la session rFactor2"><button onClick={handleSyncChrono} style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid var(--cyan)', background: 'rgba(0,255,255,0.1)', color: 'var(--cyan)', fontSize: '10px', cursor: 'pointer', fontWeight: '600' }}>🔄 Sync</button></span>}
+            {/* ══════ LIGNE 2: NAVIGATION + ACTIONS + CONTRÔLES ══════ */}
+            <div style={{ padding: '6px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
               
-              <span className="help-tooltip" data-help="IMPORT - Importer des données télémétrie depuis un fichier externe">
-                <button onClick={() => setShowImportModal(true)} style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid var(--orange)', background: 'rgba(255,136,0,0.15)', color: 'var(--orange)', fontSize: '10px', cursor: 'pointer', fontWeight: '600' }}>📊 Import</button>
-              </span>
+              {/* GAUCHE: Phase + Navigation */}
+              <div style={{display: 'flex', alignItems: 'center', gap: '10px'}}>
+                {/* Phase de session */}
+                <div style={{
+                  padding: '8px 14px', 
+                  borderRadius: '8px', 
+                  fontSize: '11px', 
+                  fontWeight: '700',
+                  background: racePhaseInfo.isRaceStarted ? 'rgba(0,255,0,0.2)' : racePhaseInfo.isSessionRunning ? 'rgba(0,200,255,0.2)' : racePhaseInfo.isFormationLap ? 'rgba(255,255,0,0.2)' : 'rgba(100,100,100,0.2)',
+                  border: racePhaseInfo.isRaceStarted ? '2px solid var(--green)' : '1px solid var(--border)',
+                  color: racePhaseInfo.isRaceStarted ? 'var(--green)' : racePhaseInfo.isSessionRunning ? 'var(--cyan)' : racePhaseInfo.isFormationLap ? 'var(--yellow)' : 'var(--text-muted)'
+                }}>
+                  {racePhaseInfo.phase === 'GREEN_FLAG' ? '🟢 COURSE' : 
+                   racePhaseInfo.phase === 'FORMATION_LAP' ? '🟡 FORMATION' :
+                   racePhaseInfo.phase === 'STARTING' ? '🟡 DÉPART' :
+                   racePhaseInfo.phase === 'FCY' ? '🟡 FCY' :
+                   racePhaseInfo.sessionType?.toLowerCase().includes('practice') ? '🔵 PRACTICE' :
+                   racePhaseInfo.sessionType?.toLowerCase().includes('warmup') ? '🟠 WARMUP' :
+                   racePhaseInfo.sessionType?.toLowerCase().includes('qualif') ? '🟣 QUALIF' :
+                   '⏳ ' + (racePhaseInfo.sessionType || 'ATTENTE')}
+                </div>
+                
+                {/* Onglets navigation */}
+                <div style={{display: 'flex', background: 'rgba(0,0,0,0.3)', borderRadius: '8px', padding: '3px'}}>
+                  <button onClick={() => setActivePage('equipe')} style={{ padding: '8px 20px', borderRadius: '6px', border: 'none', background: activePage === 'equipe' ? 'var(--blue)' : 'transparent', color: activePage === 'equipe' ? '#fff' : 'var(--text-muted)', fontWeight: '600', fontSize: '12px', cursor: 'pointer', transition: 'all 0.2s' }}>🏎️ ÉQUIPE</button>
+                  <button onClick={() => setActivePage('course')} style={{ padding: '8px 20px', borderRadius: '6px', border: 'none', background: activePage === 'course' ? 'var(--orange)' : 'transparent', color: activePage === 'course' ? '#fff' : 'var(--text-muted)', fontWeight: '600', fontSize: '12px', cursor: 'pointer', transition: 'all 0.2s' }}>🏁 COURSE</button>
+                </div>
+              </div>
               
-              <span className="help-tooltip" data-help="PRÉ-COURSE - Enregistrer des temps de référence avant la course pour calibrer les estimations. Cliquez pour ouvrir le panneau complet.">
-                <button onClick={() => setShowRefPanel(true)} style={{ padding: '6px 12px', borderRadius: '6px', border: '2px solid var(--cyan)', background: isRecordingRef ? 'var(--red)' : 'linear-gradient(135deg, rgba(0,255,255,0.2), rgba(88,166,255,0.2))', color: isRecordingRef ? '#fff' : 'var(--cyan)', fontSize: '10px', cursor: 'pointer', fontWeight: '700', animation: isRecordingRef ? 'pulse 1s infinite' : 'none', boxShadow: '0 0 10px rgba(0,255,255,0.3)' }}>
-                  {isRecordingRef ? '🔴 ENREGISTREMENT' : '🎯 PRÉ-COURSE'}
+              {/* CENTRE: Actions */}
+              <div style={{display: 'flex', alignItems: 'center', gap: '6px'}}>
+                {raceSessionTime !== null && onSyncChrono && (
+                  <button onClick={handleSyncChrono} style={{ padding: '6px 12px', borderRadius: '6px', border: '1px solid var(--cyan)', background: 'rgba(0,255,255,0.1)', color: 'var(--cyan)', fontSize: '10px', cursor: 'pointer', fontWeight: '600' }}>🔄 Sync</button>
+                )}
+                <button onClick={() => setShowImportModal(true)} style={{ padding: '6px 12px', borderRadius: '6px', border: '1px solid var(--orange)', background: 'rgba(255,136,0,0.15)', color: 'var(--orange)', fontSize: '10px', cursor: 'pointer', fontWeight: '600' }}>📊 Import</button>
+                <button onClick={() => setShowRefPanel(true)} style={{ padding: '6px 14px', borderRadius: '6px', border: '2px solid var(--cyan)', background: isRecordingRef ? 'var(--red)' : 'linear-gradient(135deg, rgba(0,255,255,0.2), rgba(88,166,255,0.2))', color: isRecordingRef ? '#fff' : 'var(--cyan)', fontSize: '10px', cursor: 'pointer', fontWeight: '700', animation: isRecordingRef ? 'pulse 1s infinite' : 'none' }}>
+                  {isRecordingRef ? '🔴 REC' : '🎯 PRÉ-COURSE'}
                 </button>
-              </span>
+                <button onClick={() => setShowWhatsNew(true)} style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid var(--purple)', background: 'rgba(163,113,247,0.2)', color: 'var(--purple)', fontSize: '10px', cursor: 'pointer', fontWeight: '600' }}>🆕</button>
+              </div>
               
-              <span className="help-tooltip" data-help="NOUVEAUTÉS - Voir les nouvelles fonctionnalités de cette version">
-                <button onClick={() => setShowWhatsNew(true)} style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid var(--purple)', background: 'rgba(163,113,247,0.2)', color: 'var(--purple)', fontSize: '10px', cursor: 'pointer', fontWeight: '600' }}>🆕 NOUVEAUTÉS</button>
-              </span>
-              
-              <div style={{ padding: '4px 8px', background: 'linear-gradient(90deg, var(--purple), var(--cyan))', borderRadius: '4px', fontSize: '8px', fontWeight: '700', color: '#fff' }}>v32</div>
-              
-              {/* v32: Toggle buttons */}
-              <button onClick={() => setShowAlertsPanel(!showAlertsPanel)} style={{padding: '4px 8px', borderRadius: '4px', border: 'none', background: showAlertsPanel ? 'rgba(255,51,68,0.3)' : 'var(--bg-input)', color: showAlertsPanel ? 'var(--red)' : 'var(--text-muted)', fontSize: '9px', cursor: 'pointer'}} title="Afficher/masquer les alertes">
-                🔔 {showAlertsPanel ? 'ON' : 'OFF'}
-              </button>
-              <button onClick={() => setShowTooltips(!showTooltips)} style={{padding: '4px 8px', borderRadius: '4px', border: 'none', background: showTooltips ? 'rgba(0,102,204,0.3)' : 'var(--bg-input)', color: showTooltips ? 'var(--blue)' : 'var(--text-muted)', fontSize: '9px', cursor: 'pointer'}} title="Afficher/masquer les bulles d'aide">
-                💬 {showTooltips ? 'ON' : 'OFF'}
-              </button>
-              
-              <span className="help-tooltip" data-help="STATUT CONNEXION - Indique si la connexion Firebase est active">
-                <div style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '4px 10px', background: isConnected ? 'rgba(0,255,102,0.15)' : 'rgba(255,51,68,0.15)', borderRadius: '12px', border: '1px solid ' + (isConnected ? 'var(--green)' : 'var(--red)') }}>
-                  <span style={{width: '6px', height: '6px', borderRadius: '50%', background: isConnected ? 'var(--green)' : 'var(--red)', animation: isConnected ? 'pulse 2s infinite' : 'none'}}></span>
-                  <span style={{fontSize: '9px', fontWeight: '600', color: isConnected ? 'var(--green)' : 'var(--red)'}}>{isConnected ? 'LIVE' : 'OFF'}</span>
+              {/* DROITE: Contrôles + Statut + Fullscreen */}
+              <div style={{display: 'flex', alignItems: 'center', gap: '8px'}}>
+                {/* Toggles */}
+                <div style={{display: 'flex', gap: '4px', padding: '4px', background: 'rgba(0,0,0,0.3)', borderRadius: '6px'}}>
+                  <button onClick={() => setShowAlertsPanel(!showAlertsPanel)} style={{padding: '5px 10px', borderRadius: '4px', border: 'none', background: showAlertsPanel ? 'rgba(255,51,68,0.3)' : 'transparent', color: showAlertsPanel ? 'var(--red)' : 'var(--text-muted)', fontSize: '10px', cursor: 'pointer', fontWeight: '600'}} title="Alertes">
+                    🔔 {showAlertsPanel ? 'ON' : 'OFF'}
+                  </button>
+                  <button onClick={() => setShowTooltips(!showTooltips)} style={{padding: '5px 10px', borderRadius: '4px', border: 'none', background: showTooltips ? 'rgba(0,102,204,0.3)' : 'transparent', color: showTooltips ? 'var(--blue)' : 'var(--text-muted)', fontSize: '10px', cursor: 'pointer', fontWeight: '600'}} title="Bulles d'aide">
+                    💬 {showTooltips ? 'ON' : 'OFF'}
+                  </button>
                 </div>
-              </span>
-              
-              {/* Chrono externe synchronisé */}
-              {externalChronoState && (
-                <span className="help-tooltip" data-help="CHRONO COURSE - Temps écoulé depuis le départ de la course">
-                  <div style={{display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 12px', background: externalChronoState.isRunning ? 'rgba(0,255,102,0.15)' : 'rgba(255,136,0,0.15)', borderRadius: '8px', border: '1px solid ' + (externalChronoState.isRunning ? 'var(--green)' : 'var(--orange)')}}>
-                    <span style={{fontSize: '10px', color: 'var(--text-muted)'}}>⏱️</span>
-                    <span style={{fontFamily: 'JetBrains Mono', fontSize: '14px', fontWeight: '700', color: externalChronoState.isRunning ? 'var(--green)' : 'var(--orange)'}}>
-                      {formatChrono(externalChronoState.elapsed || 0)}
-                    </span>
-                    {externalChronoState.isRunning && <span style={{width: '6px', height: '6px', borderRadius: '50%', background: 'var(--green)', animation: 'pulse 1s infinite'}}></span>}
-                  </div>
-                </span>
-              )}
-              
-              {/* v32.3: Temps rFactor2 LIVE */}
-              {raceSessionTime !== null && raceSessionTime > 0 && (
-                <span className="help-tooltip" data-help="RFACTOR2 - Temps restant de la session rFactor 2 en direct">
-                  <div style={{display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 10px', background: 'rgba(0,200,255,0.15)', borderRadius: '8px', border: '1px solid var(--cyan)'}}>
-                    <span style={{fontSize: '10px'}}>🎮</span>
-                    <span style={{fontFamily: 'JetBrains Mono', fontSize: '12px', fontWeight: '600', color: 'var(--cyan)'}}>
-                      {formatChrono(raceSessionTime)}
-                    </span>
-                    <span style={{fontSize: '8px', color: 'var(--text-muted)'}}>restant</span>
-                  </div>
-                </span>
-              )}
-              <div style={{fontSize: '14px', fontFamily: 'JetBrains Mono', color: 'var(--text-muted)'}}>{heure.toLocaleTimeString('fr-FR')}</div>
+                
+                {/* Statut connexion */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '5px 12px', background: isConnected ? 'rgba(0,255,102,0.15)' : 'rgba(255,51,68,0.15)', borderRadius: '20px', border: '1px solid ' + (isConnected ? 'var(--green)' : 'var(--red)') }}>
+                  <span style={{width: '8px', height: '8px', borderRadius: '50%', background: isConnected ? 'var(--green)' : 'var(--red)', animation: isConnected ? 'pulse 2s infinite' : 'none'}}></span>
+                  <span style={{fontSize: '10px', fontWeight: '600', color: isConnected ? 'var(--green)' : 'var(--red)'}}>{isConnected ? 'LIVE' : 'OFF'}</span>
+                </div>
+                
+                {/* Bouton PIT */}
+                <button style={{ padding: '8px 16px', borderRadius: '8px', border: 'none', background: 'linear-gradient(135deg, var(--cyan), var(--blue))', color: '#000', fontSize: '11px', cursor: 'pointer', fontWeight: '800', boxShadow: '0 2px 10px rgba(0,200,255,0.3)' }}>🔧 PIT</button>
+                
+                {/* Bouton FULLSCREEN */}
+                <button onClick={toggleFullscreen} style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border)', background: isFullscreen ? 'rgba(255,136,0,0.2)' : 'rgba(0,0,0,0.3)', color: isFullscreen ? 'var(--orange)' : 'var(--text-muted)', fontSize: '12px', cursor: 'pointer', fontWeight: '600' }} title="Plein écran (F11)">
+                  {isFullscreen ? '⛶' : '⛶'}
+                </button>
+              </div>
             </div>
           </div>
           
@@ -9748,9 +9885,18 @@
                       const teamTelem = telemetryData[selectedTeam];
                       const driverName = teamTelem?.driverName || stintData?.driverName || 'Pilote';
                       
-                      // Temps du stint en cours
-                      const stintElapsedMs = stintData?.startTime ? Date.now() - stintData.startTime : 0;
-                      const stintElapsedSec = Math.floor(stintElapsedMs / 1000);
+                      // v33.11 FIX: Temps du stint en cours - fallback sur sessionElapsed si pas de pit-out détecté
+                      let stintElapsedSec = 0;
+                      if (stintData?.startTime) {
+                        // Cas normal: on a détecté un pit-out
+                        stintElapsedSec = Math.floor((Date.now() - stintData.startTime) / 1000);
+                      } else if (teamTelem?.sessionElapsed > 0) {
+                        // Fallback: utiliser le temps de session (début de course = début de stint)
+                        stintElapsedSec = Math.floor(teamTelem.sessionElapsed);
+                      } else if (externalChronoState?.elapsed > 0) {
+                        // Fallback 2: utiliser le chrono
+                        stintElapsedSec = externalChronoState.elapsed;
+                      }
                       const stintHours = Math.floor(stintElapsedSec / 3600);
                       const stintMins = Math.floor((stintElapsedSec % 3600) / 60);
                       const stintTimeStr = stintHours + ':' + stintMins.toString().padStart(2,'0');
@@ -9778,7 +9924,7 @@
                           <div style={{display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '4px'}}>
                             <div style={{padding: '5px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
                               <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>Temps stint</div>
-                              <div style={{fontWeight: '600', fontSize: '11px'}}>{stintData ? stintTimeStr : '--:--'}</div>
+                              <div style={{fontWeight: '600', fontSize: '11px'}}>{stintElapsedSec > 0 ? stintTimeStr : '--:--'}</div>
                             </div>
                             <div style={{padding: '5px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
                               <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>Relais</div>
@@ -9790,7 +9936,7 @@
                             </div>
                             <div style={{padding: '5px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
                               <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>Restant</div>
-                              <div style={{fontWeight: '600', fontSize: '11px', color: remainingColor}}>{stintData ? remainingStr : '--:--'}</div>
+                              <div style={{fontWeight: '600', fontSize: '11px', color: remainingColor}}>{stintElapsedSec > 0 ? remainingStr : '--:--'}</div>
                             </div>
                           </div>
                         </div>
@@ -9802,9 +9948,12 @@
                   <div style={{display: 'flex', flexDirection: 'column', gap: '6px'}}>
                     
                     {/* v32.6: PANNEAU DÉGÂTS avec voiture stylisée */}
-                    <div className="card help-tooltip" data-help="DÉGÂTS VÉHICULE - État de chaque zone du véhicule. Vert = intact, Orange = endommagé, Rouge = critique. Les dégâts affectent les performances." style={{padding: '12px', background: vehicleDamage.total > 30 ? 'rgba(255,51,68,0.1)' : 'var(--bg-card)', border: vehicleDamage.total > 30 ? '2px solid var(--red)' : '1px solid var(--border)'}}>
+                    {/* v33.14: Ajout indicateur si dégâts estimés */}
+                    <div className="card help-tooltip" data-help="DÉGÂTS VÉHICULE - État de chaque zone du véhicule. Vert = intact, Orange = endommagé, Rouge = critique. Si 'EST' affiché = estimés via températures." style={{padding: '12px', background: vehicleDamage.total > 30 ? 'rgba(255,51,68,0.1)' : 'var(--bg-card)', border: vehicleDamage.total > 30 ? '2px solid var(--red)' : '1px solid var(--border)'}}>
                       <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px'}}>
-                        <span style={{fontWeight: '700', fontSize: '12px', color: vehicleDamage.total > 30 ? 'var(--red)' : 'var(--text-muted)'}}>🔧 DÉGÂTS</span>
+                        <span style={{fontWeight: '700', fontSize: '12px', color: vehicleDamage.total > 30 ? 'var(--red)' : 'var(--text-muted)'}}>
+                          🔧 DÉGÂTS {vehicleDamage.isEstimated && <span style={{fontSize: '9px', color: 'var(--orange)'}}>(EST)</span>}
+                        </span>
                         <span style={{fontWeight: '700', fontSize: '14px', color: vehicleDamage.total > 50 ? 'var(--red)' : vehicleDamage.total > 20 ? 'var(--orange)' : 'var(--green)'}}>{Math.round(vehicleDamage.total)}%</span>
                       </div>
                       
@@ -9973,9 +10122,18 @@
                       const teamTelem = telemetryData[selectedTeam];
                       const teamCollected = collectedData?.[selectedTeam];
                       
-                      // Temps du stint en cours
-                      const stintElapsedMs = stintData?.startTime ? Date.now() - stintData.startTime : 0;
-                      const stintElapsedSec = Math.floor(stintElapsedMs / 1000);
+                      // v33.12 FIX: Temps du stint en cours - fallback sur sessionElapsed si pas de pit-out détecté
+                      let stintElapsedSec = 0;
+                      if (stintData?.startTime) {
+                        // Cas normal: on a détecté un pit-out
+                        stintElapsedSec = Math.floor((Date.now() - stintData.startTime) / 1000);
+                      } else if (teamTelem?.sessionElapsed > 0) {
+                        // Fallback: utiliser le temps de session (début de course = début de stint)
+                        stintElapsedSec = Math.floor(teamTelem.sessionElapsed);
+                      } else if (externalChronoState?.elapsed > 0) {
+                        // Fallback 2: utiliser le chrono
+                        stintElapsedSec = externalChronoState.elapsed;
+                      }
                       const stintHours = Math.floor(stintElapsedSec / 3600);
                       const stintMins = Math.floor((stintElapsedSec % 3600) / 60);
                       const stintSecs = stintElapsedSec % 60;
@@ -10000,7 +10158,7 @@
                           <div style={{fontWeight: '700', fontSize: '12px', marginBottom: '10px', color: 'var(--text-muted)'}}>⏱️ RELAIS EN COURS</div>
                           <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px'}}>
                             <span style={{fontSize: '10px', color: 'var(--text-muted)'}}>Temps relais</span>
-                            <span style={{fontSize: '16px', fontWeight: '700', fontFamily: 'JetBrains Mono', color: progressPct > 90 ? 'var(--red)' : progressPct > 75 ? 'var(--orange)' : 'var(--text)'}}>{stintData ? stintTimeStr : '--:--:--'}</span>
+                            <span style={{fontSize: '16px', fontWeight: '700', fontFamily: 'JetBrains Mono', color: progressPct > 90 ? 'var(--red)' : progressPct > 75 ? 'var(--orange)' : 'var(--text)'}}>{stintElapsedSec > 0 ? stintTimeStr : '--:--:--'}</span>
                           </div>
                           <div style={{height: '8px', background: 'var(--bg-input)', borderRadius: '4px', overflow: 'hidden', marginBottom: '8px'}}>
                             <div style={{height: '100%', width: progressPct + '%', background: 'linear-gradient(90deg, var(--green), ' + progressColor + ')', borderRadius: '4px', transition: 'width 1s'}}/>
@@ -10290,7 +10448,7 @@
     const MainApp = ({ auth, passwords, setPasswords, onLogout, sessionId, onJoinSession }) => {
       const [confirm, setConfirm] = useState(null);
       const [showPwdModal, setShowPwdModal] = useState(false);
-      const [helpMode, setHelpMode] = useState(true); // Activé par défaut
+      const [helpMode, setHelpMode] = useState(false); // v33.12: Désactivé par défaut pour sync avec toggle 💬
       const [showSharePanel, setShowSharePanel] = useState(false);
       const [showSettingsPanel, setShowSettingsPanel] = useState(false);
       const [showQuickGuide, setShowQuickGuide] = useState(() => !localStorage.getItem('AGP_QuickGuideSeen'));
