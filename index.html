@@ -2,8 +2,27 @@
 <!--
   ═══════════════════════════════════════════════════════════════════
   TEAM AGP - Endurance Strategy Dashboard
-  v33.17 - CHRONO: Affiche temps rF2 réel (sessionElapsed)
+  v33.19 - GRANDE MISE À JOUR: Plugin v3.3.2 + Leaderboard + Données SimHub
   ═══════════════════════════════════════════════════════════════════
+  
+  CHANGELOG v33.19 (02/01/2026):
+  - LEADERBOARD: Classement complet avec tous les pilotes en course
+  - CARBURANT: Utilise Fuel_RemainingLaps de SimHub (plus précis)
+  - TIMING: Affichage delta temps réel vs meilleur tour
+  - TIMING: Historique 5 derniers tours avec tendance
+  - TIMING: Temps estimé tour en cours
+  - FREINS: Températures freins avec alertes
+  - ÉLECTRONIQUE: Indicateurs ABS/TC/Map moteur
+  - CLASSEMENT: Position dans classe + multi-classe
+  - DÉGÂTS: Indicateurs agrégés min/avg/max
+  
+  CHANGELOG v33.18 (02/01/2026):
+  - FIX CHRONO: Affiche temps RESTANT rF2 réel (sessionTimeRemaining)
+        → Nouveau state rf2SessionRemaining remonté depuis LiveView
+        → Fonctionne en Practice/Warmup/Qualif/Race (toutes sessions)
+        → 🔴 rF2 indicateur aussi sur temps restant
+  - FIX RELAIS: Temps écoulé même sans pit-out détecté
+        → Fallback sur sessionElapsed pour temps du stint
   
   CHANGELOG v33.17 (02/01/2026):
   - CHRONO PRINCIPAL: Affiche le temps rF2 réel (sessionElapsed) en temps réel
@@ -34,7 +53,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>TEAM AGP - Endurance Strategy 24h v33.17</title>
+  <title>TEAM AGP - Endurance Strategy 24h v33.19</title>
   <script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
@@ -6549,7 +6568,7 @@
     };
 
     // ========== LIVE TELEMETRY VIEW ==========
-    const LiveView = ({ raceConfig, pilots, teams = [], onImportData, onSyncChrono, onSyncChronoDirect, onRF2Elapsed, onStintUpdate, onAddIncident, onAutoImportChrono, onApplyReferences, collectedData: externalCollectedData, setCollectedData: externalSetCollectedData, pilotStatus: externalPilotStatus, setPilotStatus: externalSetPilotStatus, chronoState: externalChronoState, sessionId, uxSettings = {}, raceMode = 'training', teamCarNumber = '05' }) => {
+    const LiveView = ({ raceConfig, pilots, teams = [], onImportData, onSyncChrono, onSyncChronoDirect, onRF2Elapsed, onRF2Remaining, onStintUpdate, onAddIncident, onAutoImportChrono, onApplyReferences, collectedData: externalCollectedData, setCollectedData: externalSetCollectedData, pilotStatus: externalPilotStatus, setPilotStatus: externalSetPilotStatus, chronoState: externalChronoState, sessionId, uxSettings = {}, raceMode = 'training', teamCarNumber = '05' }) => {
       // ═══════════════════════════════════════════════════════════════════
       // LIVE VIEW V2 - 2 PAGES COMPLÈTES: ÉQUIPE + COURSE
       // ═══════════════════════════════════════════════════════════════════
@@ -7684,8 +7703,17 @@
         const data = (status?.online && telem) ? telem : (status?.lastData || telem);
         const isOffline = !status?.online;
         const fuelPct = data.fuelCapacity ? (data.fuelRemaining / data.fuelCapacity * 100) : 50;
-        const consoMoy = collected?.avgFuelCons || 2.8;
-        const toursRestants = data.fuelRemaining ? data.fuelRemaining / consoMoy : 0;
+        
+        // v33.19: Utiliser conso SimHub si disponible, sinon calcul local
+        const consoMoy = data.fuelLitersPerLap > 0 ? data.fuelLitersPerLap : (collected?.avgFuelCons || 2.8);
+        
+        // v33.19: Utiliser tours restants SimHub (plus précis)
+        const toursRestants = data.fuelRemainingLaps > 0 ? data.fuelRemainingLaps : 
+          (data.fuelRemaining ? data.fuelRemaining / consoMoy : 0);
+        
+        // v33.19: Temps restant carburant (en secondes)
+        const fuelTimeRemaining = data.fuelRemainingTime > 0 ? data.fuelRemainingTime : 
+          (toursRestants * 108); // Estimation 108s par tour
         
         return {
           nom: data.driverName || 'Pilote',
@@ -7694,12 +7722,29 @@
           dernierTour: formatLapTime(data.lastLapTime),
           meilleurTour: formatLapTime(data.bestLapTime),
           vitesse: data.speedKmh || 0,
-          carburant: { litres: data.fuelRemaining || 0, capacite: data.fuelCapacity || 75, pct: fuelPct, consoMoy, toursRestants },
+          carburant: { 
+            litres: data.fuelRemaining || 0, 
+            capacite: data.fuelCapacity || 75, 
+            pct: fuelPct, 
+            consoMoy, 
+            toursRestants,
+            currentLapCons: data.fuelCurrentLapCons || 0,
+            lastLapCons: data.fuelLastLapCons || 0,
+            timeRemaining: fuelTimeRemaining
+          },
           pneus: { FL: getTyreWear(data.tyrewearFL), FR: getTyreWear(data.tyrewearFR), RL: getTyreWear(data.tyrewearRL), RR: getTyreWear(data.tyrewearRR) },
           isInPit: data.isInPit === 1,
           isOffline,
           lastSeen: status?.lastSeen,
-          collected
+          collected,
+          
+          // v33.19: Nouvelles données plugin v3.3.2
+          standings: data.standings || {},
+          timing: data.timing || {},
+          brakes: data.brakes || {},
+          electronics: data.electronics || {},
+          damageAggregated: data.damageAggregated || {},
+          allVehicles: data.allVehicles || []
         };
       };
       
@@ -7818,6 +7863,21 @@
                 fuelCapacity: r.fuelCapacity ?? r.maxFuel ?? 110,
                 fuelUsedLastLap: r.fuelUsedLastLap ?? r.fuelPerLap ?? 0,
                 avgFuelPerLap: r.avgFuelPerLap ?? r.fuelPerLap ?? 0,
+                
+                // v33.19: Carburant calculé SimHub (plus précis)
+                fuelRemainingLaps: (() => {
+                  // PRIORITÉ 1: Utiliser le calcul SimHub (plus précis)
+                  if (r.fuelComputed?.remainingLaps > 0) return r.fuelComputed.remainingLaps;
+                  // PRIORITÉ 2: Calcul local si SimHub non disponible
+                  const fuel = r.fuelRemaining ?? r.fuel ?? 0;
+                  const cons = r.avgFuelPerLap ?? r.fuelPerLap ?? 0;
+                  return cons > 0 ? Math.floor(fuel / cons) : 0;
+                })(),
+                fuelLitersPerLap: r.fuelComputed?.litersPerLap ?? r.avgFuelPerLap ?? 0,
+                fuelCurrentLapCons: r.fuelComputed?.currentLapConsumption ?? 0,
+                fuelLastLapCons: r.fuelComputed?.lastLapConsumption ?? 0,
+                fuelPercent: r.fuelComputed?.fuelPercent ?? 0,
+                fuelRemainingTime: r.fuelComputed?.remainingTime ?? 0,
                 
                 // === PNEUS (usure) ===
                 tyrewearFL: r.tyrewearFL ?? r.tyreFL ?? 100,
@@ -7967,7 +8027,82 @@
                 carAhead: r.gaps?.carAhead ?? r.carAhead ?? null,
                 carBehind: r.gaps?.carBehind ?? r.carBehind ?? null,
                 driverAhead: r.gaps?.driverAhead ?? null,
-                driverBehind: r.gaps?.driverBehind ?? null
+                driverBehind: r.gaps?.driverBehind ?? null,
+                
+                // ═══ v33.18: TEMPS SESSION (pour chrono et relais) ═══
+                sessionElapsed: r.sessionElapsed ?? 0,
+                sessionTimeRemaining: r.sessionTimeRemaining ?? 0,
+                
+                // ═══════════════════════════════════════════════════════════════
+                // v33.19: NOUVELLES DONNÉES PLUGIN v3.3.2
+                // ═══════════════════════════════════════════════════════════════
+                
+                // ═══ CLASSEMENT / ADVERSAIRES ═══
+                standings: {
+                  opponentsCount: r.standings?.opponentsCount ?? 0,
+                  playerClassOpponentsCount: r.standings?.playerClassOpponentsCount ?? 0,
+                  bestLapOpponentPosition: r.standings?.bestLapOpponentPosition ?? 0,
+                  bestLapOpponentSameClassPosition: r.standings?.bestLapOpponentSameClassPosition ?? 0,
+                  hasMultipleClasses: r.standings?.hasMultipleClasses ?? false,
+                  completedLaps: r.standings?.completedLaps ?? 0,
+                  carClass: r.standings?.carClass ?? r.vehicle?.carClass ?? ''
+                },
+                
+                // ═══ CARBURANT CALCULÉ SIMHUB (plus précis) ═══
+                fuelComputed: {
+                  litersPerLap: r.fuelComputed?.litersPerLap ?? 0,
+                  remainingLaps: r.fuelComputed?.remainingLaps ?? 0,
+                  remainingTime: r.fuelComputed?.remainingTime ?? 0,
+                  currentLapConsumption: r.fuelComputed?.currentLapConsumption ?? 0,
+                  lastLapConsumption: r.fuelComputed?.lastLapConsumption ?? 0,
+                  fuelPercent: r.fuelComputed?.fuelPercent ?? 0,
+                  isValidForTracking: r.fuelComputed?.isValidForTracking ?? false
+                },
+                
+                // ═══ TIMING / RECORDS / DELTAS ═══
+                timing: {
+                  allTimeBest: r.timing?.allTimeBest ?? null,
+                  sessionBest: r.timing?.sessionBest ?? null,
+                  estimatedLapTime: r.timing?.estimatedLapTime ?? null,
+                  sessionBestDelta: r.timing?.sessionBestDelta ?? null,
+                  allTimeBestDelta: r.timing?.allTimeBestDelta ?? null,
+                  previousLaps: [
+                    r.timing?.previousLap0,
+                    r.timing?.previousLap1,
+                    r.timing?.previousLap2,
+                    r.timing?.previousLap3,
+                    r.timing?.previousLap4
+                  ].filter(t => t > 0)
+                },
+                
+                // ═══ FREINS ═══
+                brakes: {
+                  bias: r.brakes?.bias ?? 0,
+                  tempAvg: r.brakes?.tempAvg ?? 0,
+                  tempMax: r.brakes?.tempMax ?? 0,
+                  tempMin: r.brakes?.tempMin ?? 0,
+                  tempFL: r.brakes?.tempFL ?? 0,
+                  tempFR: r.brakes?.tempFR ?? 0
+                },
+                
+                // ═══ DÉGÂTS AGRÉGÉS ═══
+                damageAggregated: {
+                  min: r.damageAggregated?.min ?? 0,
+                  avg: r.damageAggregated?.avg ?? 0,
+                  max: r.damageAggregated?.max ?? 0
+                },
+                
+                // ═══ ÉLECTRONIQUE ═══
+                electronics: {
+                  absLevel: r.electronics?.absLevel ?? 0,
+                  tcLevel: r.electronics?.tcLevel ?? 0,
+                  engineMap: r.electronics?.engineMap ?? 0,
+                  maxRPM: r.electronics?.maxRPM ?? 0,
+                  maxGears: r.electronics?.maxGears ?? 0
+                },
+                
+                // ═══ LEADERBOARD COMPLET (tous adversaires) ═══
+                allVehicles: r.allVehicles ?? []
               };
             });
             
@@ -8480,6 +8615,11 @@
               // ═══ v33.17: REMONTER sessionElapsed au niveau App pour chrono principal ═══
               if (sessionElapsed > 0 && onRF2Elapsed) {
                 onRF2Elapsed(Math.floor(sessionElapsed));
+              }
+              
+              // ═══ v33.18: REMONTER sessionTimeRemaining pour countdown rF2 réel ═══
+              if (sessionData.sessionTimeRemaining > 0 && onRF2Remaining) {
+                onRF2Remaining(Math.floor(sessionData.sessionTimeRemaining));
               }
               
               if (sessionElapsed > 0 && onSyncChrono && externalChronoState && raceEffectivelyStarted) {
@@ -9471,331 +9611,214 @@
               ) : (
                 <div style={{display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px'}}>
                   
-                  {/* COL 1: Position + Temps + Écarts */}
+                  {/* COL 1: ÉQUIPE - Layout professionnel v33.19 */}
                   <div style={{display: 'flex', flexDirection: 'column', gap: '6px'}}>
                     
-                    {/* Header équipe */}
-                    <div className="card help-tooltip" data-help="INFO ÉQUIPE - Position actuelle, pilote en piste et vitesse instantanée" style={{padding: '10px', borderLeft: '4px solid ' + equipe.couleur}}>
+                    {/* ═══ HEADER ÉQUIPE COMPACT ═══ */}
+                    <div className="card" style={{padding: '10px', borderLeft: '4px solid ' + equipe.couleur, background: 'linear-gradient(135deg, var(--bg-card) 0%, rgba(0,0,0,0.3) 100%)'}}>
                       <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
-                        <div>
-                          <div style={{fontSize: '28px', fontWeight: '800', color: equipe.couleur}}>#{selectedTeam}</div>
-                          <div style={{fontSize: '13px', fontWeight: '600'}}>{equipe.nom}</div>
-                          <div style={{fontSize: '11px', color: 'var(--text-muted)'}}>👤 {currentTeam.nom}</div>
-                        </div>
-                        <div style={{textAlign: 'right'}}>
-                          <div style={{fontSize: '32px', fontWeight: '800'}}>P{currentTeam.position}</div>
-                          <div style={{fontSize: '10px', color: 'var(--text-dim)'}}>Tour {currentTeam.tour}</div>
-                          <div style={{fontSize: '12px', color: 'var(--cyan)', fontFamily: 'JetBrains Mono'}}>{currentTeam.vitesse} km/h</div>
-                        </div>
-                      </div>
-                      {currentTeam.isInPit && <div style={{marginTop:'8px', padding:'6px', background:'rgba(255,136,0,0.2)', borderRadius:'4px', textAlign:'center', color:'var(--orange)', fontWeight:'700', fontSize:'12px', animation:'pulse 1s infinite'}}>🔧 AUX STANDS</div>}
-                      {currentTeam.isOffline && <div style={{marginTop:'8px', padding:'6px', background:'rgba(255,51,68,0.1)', borderRadius:'4px', fontSize:'10px', color:'var(--red)'}}>⚠️ OFFLINE - {currentTeam.lastSeen ? new Date(currentTeam.lastSeen).toLocaleTimeString() : '?'}</div>}
-                    </div>
-                    
-                    {/* Temps au tour */}
-                    {/* Temps au tour */}
-                    <div className="card help-tooltip" data-help="TEMPS AU TOUR - Dernier temps réalisé et meilleur temps de la session. Les stats montrent la moyenne sur tous les tours." style={{padding: '10px'}}>
-                      <div style={{fontWeight: '700', fontSize: '12px', marginBottom: '10px', color: 'var(--text-muted)'}}>⏱️ TEMPS AU TOUR</div>
-                      <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px'}}>
-                        <div style={{padding: '10px', background: 'var(--bg-input)', borderRadius: '6px', textAlign: 'center'}}>
-                          <div style={{fontSize: '9px', color: 'var(--text-muted)'}}>Dernier</div>
-                          <div style={{fontSize: '18px', fontWeight: '700', fontFamily: 'JetBrains Mono'}}>{currentTeam.dernierTour}</div>
-                        </div>
-                        <div style={{padding: '10px', background: 'var(--bg-input)', borderRadius: '6px', textAlign: 'center'}}>
-                          <div style={{fontSize: '9px', color: 'var(--text-muted)'}}>Meilleur</div>
-                          <div style={{fontSize: '18px', fontWeight: '700', fontFamily: 'JetBrains Mono', color: 'var(--green)'}}>{currentTeam.meilleurTour}</div>
-                        </div>
-                      </div>
-                      {currentTeam.collected && (
-                        <div style={{marginTop: '8px', padding: '8px', background: 'rgba(0,170,255,0.1)', borderRadius: '6px', border: '1px solid var(--blue)'}}>
-                          <div style={{fontSize: '9px', color: 'var(--blue)', marginBottom: '4px'}}>📊 Stats ({currentTeam.collected.totalLaps} tours)</div>
-                          <div style={{display: 'flex', justifyContent: 'space-around', fontSize: '11px'}}>
-                            <span>Moy: <strong>{currentTeam.collected.avgLapTimeStr}</strong></span>
-                            <span>Best: <strong style={{color:'var(--green)'}}>{currentTeam.collected.bestLapStr}</strong></span>
+                        <div style={{display: 'flex', alignItems: 'center', gap: '12px'}}>
+                          <div style={{fontSize: '32px', fontWeight: '800', color: equipe.couleur}}>#{selectedTeam}</div>
+                          <div>
+                            <div style={{fontSize: '14px', fontWeight: '700'}}>{equipe.nom}</div>
+                            <div style={{fontSize: '11px', color: 'var(--cyan)'}}>👤 {currentTeam.nom}</div>
                           </div>
                         </div>
-                      )}
-                    </div>
-                    
-                    {/* Écarts voitures proches */}
-                    <div className="card help-tooltip" data-help="ÉCARTS - Distance en secondes avec les voitures directement devant et derrière. Orange = voiture devant à rattraper, Vert = avance sur la voiture derrière." style={{padding: '10px'}}>
-                      <div style={{fontWeight: '700', fontSize: '12px', marginBottom: '10px', color: 'var(--text-muted)'}}>📏 ÉCARTS PROCHES</div>
-                      <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px'}}>
-                        <div style={{padding: '10px', background: 'var(--bg-input)', borderRadius: '6px', textAlign: 'center'}}>
-                          <div style={{fontSize: '9px', color: 'var(--text-muted)'}}>Devant</div>
-                          {(() => {
-                            const telem = telemetryData[selectedTeam];
-                            const gap = telem?.gapAhead;
-                            const driver = telem?.driverAhead;
-                            const car = telem?.carAhead;
-                            if (gap != null || driver) {
-                              return (
-                                <React.Fragment>
-                                  <div style={{fontSize: '16px', fontWeight: '700', color: 'var(--orange)', fontFamily: 'JetBrains Mono'}}>
-                                    -{(gap ?? 0).toFixed(1)}s
-                                  </div>
-                                  {(driver || car) && <div style={{fontSize: '8px', color: 'var(--text-dim)', marginTop: '2px'}}>#{car} {driver?.split(' ')[0] || ''}</div>}
-                                </React.Fragment>
-                              );
-                            }
-                            return <div style={{fontSize: '16px', fontWeight: '700', color: 'var(--text-dim)', fontFamily: 'JetBrains Mono'}}>--</div>;
-                          })()}
-                        </div>
-                        <div style={{padding: '10px', background: 'var(--bg-input)', borderRadius: '6px', textAlign: 'center'}}>
-                          <div style={{fontSize: '9px', color: 'var(--text-muted)'}}>Derrière</div>
-                          {(() => {
-                            const telem = telemetryData[selectedTeam];
-                            const gap = telem?.gapBehind;
-                            const driver = telem?.driverBehind;
-                            const car = telem?.carBehind;
-                            if (gap != null || driver) {
-                              return (
-                                <React.Fragment>
-                                  <div style={{fontSize: '16px', fontWeight: '700', color: 'var(--green)', fontFamily: 'JetBrains Mono'}}>
-                                    +{(gap ?? 0).toFixed(1)}s
-                                  </div>
-                                  {(driver || car) && <div style={{fontSize: '8px', color: 'var(--text-dim)', marginTop: '2px'}}>#{car} {driver?.split(' ')[0] || ''}</div>}
-                                </React.Fragment>
-                              );
-                            }
-                            return <div style={{fontSize: '16px', fontWeight: '700', color: 'var(--text-dim)', fontFamily: 'JetBrains Mono'}}>--</div>;
-                          })()}
+                        <div style={{textAlign: 'right', padding: '8px 12px', background: 'var(--bg-input)', borderRadius: '8px'}}>
+                          <div style={{fontSize: '28px', fontWeight: '800', color: currentTeam.position <= 3 ? '#ffd700' : 'var(--text)'}}>P{currentTeam.position}</div>
+                          <div style={{fontSize: '9px', color: 'var(--text-muted)'}}>Tour {currentTeam.tour} • {currentTeam.vitesse} km/h</div>
                         </div>
                       </div>
+                      {currentTeam.isInPit && <div style={{marginTop:'8px', padding:'6px', background:'rgba(255,136,0,0.2)', borderRadius:'4px', textAlign:'center', color:'var(--orange)', fontWeight:'700', fontSize:'11px', animation:'pulse 1s infinite'}}>🔧 AUX STANDS</div>}
                     </div>
                     
-                    {/* Secteurs - données live */}
-                    <div className="card help-tooltip" data-help="SECTEURS - Meilleurs temps secteurs et temps total du dernier tour" style={{padding: '10px'}}>
-                      <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px'}}>
-                        <span style={{fontWeight: '700', fontSize: '12px', color: 'var(--text-muted)'}}>📍 SECTEURS</span>
-                        <span style={{fontSize: '8px', color: 'var(--text-dim)', padding: '2px 6px', background: 'var(--bg-input)', borderRadius: '4px'}}>meilleurs temps</span>
-                      </div>
+                    {/* ═══ MÉTRIQUES CLÉS - Grid 2x3 ═══ */}
+                    <div className="card" style={{padding: '10px'}}>
                       <div style={{display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px'}}>
+                        {/* Dernier Tour */}
+                        <div style={{padding: '8px', background: 'var(--bg-input)', borderRadius: '6px', textAlign: 'center', borderTop: '2px solid var(--cyan)'}}>
+                          <div style={{fontSize: '8px', color: 'var(--text-muted)', marginBottom: '2px'}}>DERNIER</div>
+                          <div style={{fontSize: '15px', fontWeight: '700', fontFamily: 'JetBrains Mono'}}>{currentTeam.dernierTour}</div>
+                        </div>
+                        {/* Meilleur Tour */}
+                        <div style={{padding: '8px', background: 'var(--bg-input)', borderRadius: '6px', textAlign: 'center', borderTop: '2px solid var(--green)'}}>
+                          <div style={{fontSize: '8px', color: 'var(--text-muted)', marginBottom: '2px'}}>MEILLEUR</div>
+                          <div style={{fontSize: '15px', fontWeight: '700', fontFamily: 'JetBrains Mono', color: 'var(--green)'}}>{currentTeam.meilleurTour}</div>
+                        </div>
+                        {/* Écart Leader */}
+                        <div style={{padding: '8px', background: 'var(--bg-input)', borderRadius: '6px', textAlign: 'center', borderTop: '2px solid var(--orange)'}}>
+                          <div style={{fontSize: '8px', color: 'var(--text-muted)', marginBottom: '2px'}}>VS LEADER</div>
+                          <div style={{fontSize: '15px', fontWeight: '700', fontFamily: 'JetBrains Mono', color: currentTeam.position === 1 ? 'var(--gold)' : 'var(--orange)'}}>
+                            {currentTeam.position === 1 ? 'LEADER' : '+' + (telemetryData[selectedTeam]?.gapLeader || 0).toFixed(1) + 's'}
+                          </div>
+                        </div>
+                        {/* Devant */}
+                        <div style={{padding: '8px', background: 'var(--bg-input)', borderRadius: '6px', textAlign: 'center'}}>
+                          <div style={{fontSize: '8px', color: 'var(--text-muted)', marginBottom: '2px'}}>↑ DEVANT</div>
+                          <div style={{fontSize: '14px', fontWeight: '700', fontFamily: 'JetBrains Mono', color: 'var(--orange)'}}>
+                            {telemetryData[selectedTeam]?.gapAhead ? '-' + telemetryData[selectedTeam].gapAhead.toFixed(1) + 's' : '--'}
+                          </div>
+                          <div style={{fontSize: '7px', color: 'var(--text-dim)'}}>#{telemetryData[selectedTeam]?.carAhead || '-'}</div>
+                        </div>
+                        {/* Derrière */}
+                        <div style={{padding: '8px', background: 'var(--bg-input)', borderRadius: '6px', textAlign: 'center'}}>
+                          <div style={{fontSize: '8px', color: 'var(--text-muted)', marginBottom: '2px'}}>↓ DERRIÈRE</div>
+                          <div style={{fontSize: '14px', fontWeight: '700', fontFamily: 'JetBrains Mono', color: 'var(--green)'}}>
+                            {telemetryData[selectedTeam]?.gapBehind ? '+' + telemetryData[selectedTeam].gapBehind.toFixed(1) + 's' : '--'}
+                          </div>
+                          <div style={{fontSize: '7px', color: 'var(--text-dim)'}}>#{telemetryData[selectedTeam]?.carBehind || '-'}</div>
+                        </div>
+                        {/* Secteurs */}
+                        <div style={{padding: '8px', background: 'var(--bg-input)', borderRadius: '6px', textAlign: 'center'}}>
+                          <div style={{fontSize: '8px', color: 'var(--text-muted)', marginBottom: '2px'}}>SECTEURS</div>
+                          <div style={{display: 'flex', gap: '2px', justifyContent: 'center'}}>
+                            <span style={{fontSize: '9px', color: 'var(--green)', fontFamily: 'JetBrains Mono'}}>{(telemetryData[selectedTeam]?.bestSector1 || 0).toFixed(1)}</span>
+                            <span style={{fontSize: '9px', color: 'var(--purple)', fontFamily: 'JetBrains Mono'}}>{(telemetryData[selectedTeam]?.bestSector2 || 0).toFixed(1)}</span>
+                            <span style={{fontSize: '9px', color: 'var(--orange)', fontFamily: 'JetBrains Mono'}}>{(telemetryData[selectedTeam]?.bestSector3 || 0).toFixed(1)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    {/* ═══ CHRONOLOGIE IMPORTANTE ═══ */}
+                    <div className="card" style={{padding: '10px', flex: 1}}>
+                      <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px'}}>
+                        <span style={{fontWeight: '700', fontSize: '11px', color: 'var(--text-muted)'}}>📜 CHRONOLOGIE</span>
+                        <span style={{fontSize: '8px', color: 'var(--green)'}}>● LIVE</span>
+                      </div>
+                      
+                      <div style={{maxHeight: '200px', overflowY: 'auto'}}>
                         {(() => {
+                          // Construire chronologie équipe
+                          const teamEvents = [];
                           const telem = telemetryData[selectedTeam] || {};
-                          const sectors = [
-                            { label: 'S1', value: telem.bestSector1 || telem.sector1, color: 'var(--green)' },
-                            { label: 'S2', value: telem.bestSector2 || telem.sector2, color: 'var(--purple)' },
-                            { label: 'S3', value: telem.bestSector3 || telem.sector3, color: 'var(--orange)' }
-                          ];
-                          return sectors.map((sec, i) => (
-                            <div key={i} style={{padding: '8px', background: 'var(--bg-input)', borderRadius: '6px', textAlign: 'center', borderLeft: '3px solid ' + sec.color}}>
-                              <div style={{fontSize: '9px', color: 'var(--text-muted)', marginBottom: '2px'}}>{sec.label}</div>
-                              <div style={{fontSize: '16px', fontWeight: '700', fontFamily: 'JetBrains Mono', color: sec.color}}>
-                                {sec.value > 0 ? (sec.label === 'Total' ? formatLapTimeSec(sec.value) : sec.value.toFixed(3)) : '--'}
+                          const collected = currentTeam.collected || {};
+                          
+                          // Événement: Meilleur tour
+                          if (collected.bestLapStr && collected.bestLapStr !== '--:--.---') {
+                            teamEvents.push({ time: 'Session', icon: '🏆', msg: `Meilleur: ${collected.bestLapStr}`, type: 'best' });
+                          }
+                          
+                          // Événement: Dernier tour
+                          if (currentTeam.dernierTour && currentTeam.dernierTour !== '--:--.---') {
+                            teamEvents.push({ time: `T${currentTeam.tour}`, icon: '⏱️', msg: `Dernier: ${currentTeam.dernierTour}`, type: 'lap' });
+                          }
+                          
+                          // Événement: Position changée (simulé)
+                          if (currentTeam.position <= 3) {
+                            teamEvents.push({ time: 'Actuel', icon: '🥇', msg: `Podium P${currentTeam.position}`, type: 'position' });
+                          }
+                          
+                          // Événement: Aux stands
+                          if (currentTeam.isInPit) {
+                            teamEvents.push({ time: 'NOW', icon: '🔧', msg: 'Arrêt aux stands', type: 'pit' });
+                          }
+                          
+                          // Événement: Stats collectées
+                          if (collected.totalLaps > 0) {
+                            teamEvents.push({ time: 'Stats', icon: '📊', msg: `${collected.totalLaps} tours • Moy: ${collected.avgLapTimeStr}`, type: 'stats' });
+                          }
+                          
+                          // Événement: Consommation
+                          if (collected.avgFuelCons > 0) {
+                            teamEvents.push({ time: 'Carbu', icon: '⛽', msg: `Conso moy: ${collected.avgFuelCons.toFixed(2)}L/t`, type: 'fuel' });
+                          }
+                          
+                          // Événement: Écart proche critique
+                          const gapAhead = telem.gapAhead;
+                          if (gapAhead && gapAhead < 2) {
+                            teamEvents.push({ time: 'ALERTE', icon: '⚠️', msg: `Voiture devant à ${gapAhead.toFixed(1)}s!`, type: 'alert' });
+                          }
+                          
+                          const gapBehind = telem.gapBehind;
+                          if (gapBehind && gapBehind < 2) {
+                            teamEvents.push({ time: 'ALERTE', icon: '⚠️', msg: `Voiture derrière à ${gapBehind.toFixed(1)}s!`, type: 'alert' });
+                          }
+                          
+                          // Trier par priorité: alertes d'abord, puis pit, puis best, etc.
+                          const priority = { alert: 0, pit: 1, best: 2, position: 3, lap: 4, stats: 5, fuel: 6 };
+                          teamEvents.sort((a, b) => priority[a.type] - priority[b.type]);
+                          
+                          if (teamEvents.length === 0) {
+                            return (
+                              <div style={{textAlign: 'center', padding: '20px', color: 'var(--text-dim)', fontSize: '10px'}}>
+                                En attente de données...
                               </div>
+                            );
+                          }
+                          
+                          return teamEvents.map((ev, i) => (
+                            <div key={i} style={{
+                              display: 'flex', alignItems: 'center', gap: '8px',
+                              padding: '6px 8px', marginBottom: '4px',
+                              background: ev.type === 'alert' ? 'rgba(255,51,68,0.15)' : ev.type === 'best' ? 'rgba(255,215,0,0.1)' : ev.type === 'pit' ? 'rgba(255,136,0,0.15)' : 'var(--bg-input)',
+                              borderRadius: '4px',
+                              borderLeft: ev.type === 'alert' ? '3px solid var(--red)' : ev.type === 'best' ? '3px solid #ffd700' : ev.type === 'pit' ? '3px solid var(--orange)' : '3px solid var(--border)'
+                            }}>
+                              <span style={{fontSize: '8px', color: 'var(--text-dim)', minWidth: '40px', fontFamily: 'JetBrains Mono'}}>{ev.time}</span>
+                              <span style={{fontSize: '12px'}}>{ev.icon}</span>
+                              <span style={{fontSize: '10px', color: ev.type === 'alert' ? 'var(--red)' : ev.type === 'best' ? '#ffd700' : 'var(--text)', flex: 1}}>{ev.msg}</span>
                             </div>
                           ));
                         })()}
                       </div>
-                      <div style={{marginTop: '6px', fontSize: '9px', color: 'var(--text-dim)', textAlign: 'center'}}>
-                        Dernier: <strong style={{color: 'var(--text)'}}>{telemetryData[selectedTeam]?.lastLapTime || '--:--.---'}</strong>
-                      </div>
                     </div>
                     
-                    {/* PRÉDICTIONS - v32.6: Avec sélecteur de mode */}
-                    <div className="card help-tooltip" data-help="PRÉDICTIONS - Choisir entre vue Équipe (total), Pilote (par pilote) ou Relais (stints consécutifs). Basé sur les profils et temps de référence." style={{padding: '10px'}}>
-                      {/* Header avec sélecteur */}
-                      <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px'}}>
-                        <span style={{fontWeight: '700', fontSize: '12px', color: 'var(--text-muted)'}}>🔮 PRÉDICTIONS</span>
+                    {/* ═══ PRÉDICTIONS COMPACT ═══ */}
+                    <div className="card" style={{padding: '10px'}}>
+                      <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px'}}>
+                        <span style={{fontWeight: '700', fontSize: '11px', color: 'var(--text-muted)'}}>🔮 PRÉDICTIONS</span>
                         <div style={{display: 'flex', gap: '2px'}}>
-                          <button 
-                            onClick={() => setPredictionMode('equipe')} 
-                            style={{
-                              padding: '3px 6px', fontSize: '8px', fontWeight: '600', borderRadius: '4px', border: 'none', cursor: 'pointer',
-                              background: predictionMode === 'equipe' ? 'var(--blue)' : 'var(--bg-input)', 
-                              color: predictionMode === 'equipe' ? '#fff' : 'var(--text-muted)'
-                            }}>
-                            Équipe
-                          </button>
-                          <button 
-                            onClick={() => setPredictionMode('pilote')} 
-                            style={{
-                              padding: '3px 6px', fontSize: '8px', fontWeight: '600', borderRadius: '4px', border: 'none', cursor: 'pointer',
-                              background: predictionMode === 'pilote' ? 'var(--green)' : 'var(--bg-input)', 
-                              color: predictionMode === 'pilote' ? '#fff' : 'var(--text-muted)'
-                            }}>
-                            Pilote
-                          </button>
-                          <button 
-                            onClick={() => setPredictionMode('relais')} 
-                            style={{
-                              padding: '3px 6px', fontSize: '8px', fontWeight: '600', borderRadius: '4px', border: 'none', cursor: 'pointer',
-                              background: predictionMode === 'relais' ? 'var(--orange)' : 'var(--bg-input)', 
-                              color: predictionMode === 'relais' ? '#fff' : 'var(--text-muted)'
-                            }}>
-                            Relais
-                          </button>
+                          {['equipe', 'pilote', 'relais'].map(mode => (
+                            <button key={mode} onClick={() => setPredictionMode(mode)} style={{
+                              padding: '2px 6px', fontSize: '8px', fontWeight: '600', borderRadius: '3px', border: 'none', cursor: 'pointer',
+                              background: predictionMode === mode ? (mode === 'equipe' ? 'var(--blue)' : mode === 'pilote' ? 'var(--green)' : 'var(--orange)') : 'var(--bg-input)',
+                              color: predictionMode === mode ? '#fff' : 'var(--text-muted)'
+                            }}>{mode.charAt(0).toUpperCase() + mode.slice(1)}</button>
+                          ))}
                         </div>
                       </div>
                       
                       {(() => {
-                        // Données communes
                         const raceDurationSec = (raceConfig?.raceDuration || 6) * 3600;
                         const elapsed = externalChronoState?.elapsed || 0;
                         const remaining = Math.max(0, raceDurationSec - elapsed);
                         const consoParTour = currentTeam.carburant?.consoMoy || 3.5;
                         const capacite = currentTeam.carburant?.capacite || 100;
-                        const tempsMaxPilote = 150 * 60; // 2h30
+                        const avgLapTime = currentTeam.temps?.sec || 108;
                         
-                        // Récupérer les pilotes de l'équipe - utiliser pilots passé en prop ou chercher dans teams
-                        const teamConfig = (teams || []).find(t => t.carNumber === selectedTeam || t.name?.includes(selectedTeam));
-                        const pilotes = teamConfig?.drivers || pilots || ['Pilote 1', 'Pilote 2'];
-                        const pilotComboTimes = teamConfig?.settings?.pilotComboTimes || raceConfig?.pilotComboTimes || {};
-                        const pilotComboCons = teamConfig?.settings?.pilotComboCons || raceConfig?.pilotComboCons || {};
-                        
-                        // === MODE ÉQUIPE ===
                         if (predictionMode === 'equipe') {
-                          const avgLapTime = currentTeam.temps?.sec || 108;
-                          const toursFaits = currentTeam.tour || 0;
                           const toursRestants = avgLapTime > 0 ? Math.floor(remaining / avgLapTime) : 0;
-                          const toursTotaux = toursFaits + toursRestants;
-                          const carbuTotalRestant = Math.round(toursRestants * consoParTour);
-                          const toursParRelais = capacite / consoParTour;
-                          const arretsRestants = Math.ceil(toursRestants / toursParRelais);
-                          const relaisRestants = Math.ceil(remaining / tempsMaxPilote);
-                          
+                          const toursTotaux = (currentTeam.tour || 0) + toursRestants;
+                          const arretsRestants = Math.ceil(toursRestants / (capacite / consoParTour));
                           return (
-                            <div style={{display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '4px'}}>
+                            <div style={{display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '4px'}}>
                               <div style={{padding: '6px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
-                                <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>Tours total</div>
-                                <div style={{fontWeight: '700', fontSize: '13px'}}>~{toursTotaux}</div>
+                                <div style={{fontSize: '7px', color: 'var(--text-muted)'}}>Tours</div>
+                                <div style={{fontWeight: '700', fontSize: '12px'}}>~{toursTotaux}</div>
                               </div>
                               <div style={{padding: '6px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
-                                <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>Arrêts restants</div>
-                                <div style={{fontWeight: '700', fontSize: '13px'}}>~{arretsRestants}</div>
+                                <div style={{fontSize: '7px', color: 'var(--text-muted)'}}>Arrêts</div>
+                                <div style={{fontWeight: '700', fontSize: '12px', color: 'var(--orange)'}}>~{arretsRestants}</div>
                               </div>
                               <div style={{padding: '6px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
-                                <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>Carburant restant</div>
-                                <div style={{fontWeight: '700', fontSize: '13px', color: 'var(--orange)'}}>~{carbuTotalRestant}L</div>
+                                <div style={{fontSize: '7px', color: 'var(--text-muted)'}}>Carbu</div>
+                                <div style={{fontWeight: '700', fontSize: '12px', color: 'var(--cyan)'}}>~{Math.round(toursRestants * consoParTour)}L</div>
                               </div>
                               <div style={{padding: '6px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
-                                <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>Relais restants</div>
-                                <div style={{fontWeight: '700', fontSize: '13px', color: 'var(--cyan)'}}>~{relaisRestants}</div>
+                                <div style={{fontSize: '7px', color: 'var(--text-muted)'}}>Relais</div>
+                                <div style={{fontWeight: '700', fontSize: '12px'}}>~{Math.ceil(remaining / (150 * 60))}</div>
                               </div>
                             </div>
                           );
                         }
                         
-                        // === MODE PILOTE ===
-                        if (predictionMode === 'pilote') {
-                          return (
-                            <div style={{display: 'flex', flexDirection: 'column', gap: '6px'}}>
-                              {pilotes.map((piloteItem, idx) => {
-                                // v33.8 FIX: piloteItem peut être un objet {id, name} ou une string
-                                const pilote = typeof piloteItem === 'string' ? piloteItem : (piloteItem?.name || piloteItem?.pilotName || 'Pilote ' + (idx + 1));
-                                
-                                // Trouver le temps de référence du pilote (chercher dans pilotComboTimes)
-                                let pilotLapTime = 108; // défaut
-                                let pilotConso = consoParTour;
-                                
-                                // v33.8 FIX: Vérifier que pilote est bien une string avant toLowerCase
-                                const piloteStr = String(pilote || '').toLowerCase();
-                                const pilotePrefix = piloteStr.substring(0, 4);
-                                
-                                // Chercher la clé qui contient le nom du pilote
-                                Object.keys(pilotComboTimes).forEach(key => {
-                                  if (pilotePrefix && key.toLowerCase().includes(pilotePrefix)) {
-                                    const timeStr = pilotComboTimes[key];
-                                    // Parser "1:45.123" en secondes
-                                    if (timeStr) {
-                                      const match = timeStr.match(/(\d+):(\d+)\.(\d+)/);
-                                      if (match) {
-                                        pilotLapTime = parseInt(match[1]) * 60 + parseInt(match[2]) + parseInt(match[3]) / 1000;
-                                      }
-                                    }
-                                  }
-                                });
-                                
-                                Object.keys(pilotComboCons).forEach(key => {
-                                  if (pilotePrefix && key.toLowerCase().includes(pilotePrefix)) {
-                                    pilotConso = parseFloat(pilotComboCons[key]) || consoParTour;
-                                  }
-                                });
-                                
-                                // Calculs par pilote
-                                const toursParRelaisPilote = capacite / pilotConso;
-                                const stintsParRelais = Math.floor(tempsMaxPilote / (pilotLapTime * toursParRelaisPilote));
-                                const toursParRelaisPiloteTotal = Math.floor(tempsMaxPilote / pilotLapTime);
-                                const nbRelaisPilote = Math.ceil(remaining / (tempsMaxPilote * pilotes.length));
-                                const toursTotalPilote = nbRelaisPilote * toursParRelaisPiloteTotal;
-                                
-                                return (
-                                  <div key={idx} style={{padding: '6px', background: 'var(--bg-input)', borderRadius: '4px'}}>
-                                    <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px'}}>
-                                      <span style={{fontWeight: '700', fontSize: '10px', color: 'var(--text)'}}>{pilote}</span>
-                                      <span style={{fontSize: '9px', color: 'var(--cyan)'}}>{pilotLapTime.toFixed(1)}s/t</span>
-                                    </div>
-                                    <div style={{display: 'flex', justifyContent: 'space-between', fontSize: '9px'}}>
-                                      <span style={{color: 'var(--text-muted)'}}>Relais: <strong style={{color: 'var(--green)'}}>{nbRelaisPilote}</strong></span>
-                                      <span style={{color: 'var(--text-muted)'}}>Tours: <strong>~{toursTotalPilote}</strong></span>
-                                      <span style={{color: 'var(--text-muted)'}}>Stints/rel: <strong style={{color: 'var(--orange)'}}>{Math.max(1, stintsParRelais)}</strong></span>
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          );
-                        }
-                        
-                        // === MODE RELAIS ===
-                        if (predictionMode === 'relais') {
-                          const avgLapTime = currentTeam.temps?.sec || 108;
-                          const toursParStint = Math.floor(capacite / consoParTour);
-                          const tempsParStint = toursParStint * avgLapTime;
-                          const stintsParRelais = Math.floor(tempsMaxPilote / tempsParStint);
-                          const toursParRelais = toursParStint * stintsParRelais;
-                          const tempsRelais = toursParRelais * avgLapTime;
-                          
-                          // Prédiction du relais en cours
-                          const stintActuel = Math.ceil((elapsed % tempsMaxPilote) / tempsParStint) || 1;
-                          const toursRestantsRelais = toursParRelais - (currentTeam.tour % toursParRelais || toursParRelais);
-                          
-                          return (
-                            <div style={{display: 'flex', flexDirection: 'column', gap: '6px'}}>
-                              <div style={{display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '4px'}}>
-                                <div style={{padding: '6px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
-                                  <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>Tours/stint</div>
-                                  <div style={{fontWeight: '700', fontSize: '13px'}}>{toursParStint}</div>
-                                </div>
-                                <div style={{padding: '6px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
-                                  <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>Stints/relais</div>
-                                  <div style={{fontWeight: '700', fontSize: '13px', color: 'var(--orange)'}}>{Math.max(1, stintsParRelais)}</div>
-                                </div>
-                                <div style={{padding: '6px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
-                                  <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>Tours/relais</div>
-                                  <div style={{fontWeight: '700', fontSize: '13px', color: 'var(--cyan)'}}>{toursParRelais}</div>
-                                </div>
-                                <div style={{padding: '6px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
-                                  <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>Durée relais</div>
-                                  <div style={{fontWeight: '700', fontSize: '13px'}}>{Math.floor(tempsRelais / 60)}m</div>
-                                </div>
-                              </div>
-                              
-                              {/* Barre visuelle du relais en cours */}
-                              <div style={{padding: '6px', background: 'var(--bg-input)', borderRadius: '4px'}}>
-                                <div style={{fontSize: '8px', color: 'var(--text-muted)', marginBottom: '4px'}}>Relais en cours</div>
-                                <div style={{display: 'flex', gap: '2px', height: '16px'}}>
-                                  {Array.from({length: Math.max(1, stintsParRelais)}, (_, i) => (
-                                    <div key={i} style={{
-                                      flex: 1, borderRadius: '2px',
-                                      background: i < stintActuel ? 'var(--green)' : i === stintActuel ? 'var(--orange)' : 'var(--border)',
-                                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                      fontSize: '8px', fontWeight: '600', color: i <= stintActuel ? '#fff' : 'var(--text-muted)'
-                                    }}>
-                                      S{i + 1}
-                                    </div>
-                                  ))}
-                                </div>
-                                <div style={{fontSize: '8px', color: 'var(--text-muted)', marginTop: '4px', textAlign: 'center'}}>
-                                  Stint {stintActuel}/{stintsParRelais} • ~{toursRestantsRelais} tours restants
-                                </div>
-                              </div>
-                            </div>
-                          );
-                        }
-                        
-                        return null;
+                        // Mode pilote/relais simplifié
+                        return (
+                          <div style={{fontSize: '10px', color: 'var(--text-muted)', textAlign: 'center', padding: '8px'}}>
+                            Mode {predictionMode} - Voir onglet Planning pour détails
+                          </div>
+                        );
                       })()}
                     </div>
                   </div>
@@ -10183,6 +10206,185 @@
                         </div>
                       );
                     })()}
+                    
+                    {/* ═══════════════════════════════════════════════════════════════ */}
+                    {/* v33.19: TIMING / DELTA - Temps estimé et deltas */}
+                    {/* ═══════════════════════════════════════════════════════════════ */}
+                    {(() => {
+                      const timing = currentTeam?.timing || {};
+                      
+                      const formatTime = (sec) => {
+                        if (!sec || sec <= 0) return '--:--.---';
+                        const m = Math.floor(sec / 60);
+                        const s = (sec % 60).toFixed(3).padStart(6, '0');
+                        return `${m}:${s}`;
+                      };
+                      
+                      const formatDelta = (delta) => {
+                        if (delta === null || delta === undefined) return '--';
+                        const sign = delta >= 0 ? '+' : '';
+                        return sign + delta.toFixed(3);
+                      };
+                      
+                      const deltaColor = (delta) => {
+                        if (delta === null || delta === undefined) return 'var(--text-muted)';
+                        return delta < 0 ? 'var(--green)' : delta > 0.5 ? 'var(--red)' : 'var(--orange)';
+                      };
+                      
+                      return (
+                        <div className="card help-tooltip" data-help="TIMING - Temps estimé du tour en cours, delta par rapport au meilleur tour session et record absolu. Vert = gain, Rouge = perte." style={{padding: '12px'}}>
+                          <div style={{fontWeight: '700', fontSize: '12px', marginBottom: '10px', color: 'var(--text-muted)'}}>⏱️ TIMING LIVE</div>
+                          
+                          {/* Temps estimé tour en cours */}
+                          <div style={{textAlign: 'center', padding: '8px', background: 'var(--bg-input)', borderRadius: '6px', marginBottom: '8px'}}>
+                            <div style={{fontSize: '9px', color: 'var(--text-muted)'}}>Estimé ce tour</div>
+                            <div style={{fontSize: '20px', fontWeight: '700', fontFamily: 'JetBrains Mono', color: timing.estimatedLapTime > 0 ? 'var(--cyan)' : 'var(--text-muted)'}}>{formatTime(timing.estimatedLapTime)}</div>
+                          </div>
+                          
+                          {/* Deltas */}
+                          <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', marginBottom: '8px'}}>
+                            <div style={{padding: '6px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
+                              <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>vs Session Best</div>
+                              <div style={{fontSize: '14px', fontWeight: '700', fontFamily: 'JetBrains Mono', color: deltaColor(timing.sessionBestDelta)}}>{formatDelta(timing.sessionBestDelta)}</div>
+                            </div>
+                            <div style={{padding: '6px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
+                              <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>vs All-Time Best</div>
+                              <div style={{fontSize: '14px', fontWeight: '700', fontFamily: 'JetBrains Mono', color: deltaColor(timing.allTimeBestDelta)}}>{formatDelta(timing.allTimeBestDelta)}</div>
+                            </div>
+                          </div>
+                          
+                          {/* Records */}
+                          <div style={{display: 'flex', justifyContent: 'space-between', fontSize: '9px', padding: '6px', background: 'rgba(255,193,7,0.1)', borderRadius: '4px'}}>
+                            <span>🏆 Session: <strong style={{color: 'var(--cyan)'}}>{formatTime(timing.sessionBest)}</strong></span>
+                            <span>👑 Record: <strong style={{color: 'var(--gold)'}}>{formatTime(timing.allTimeBest)}</strong></span>
+                          </div>
+                          
+                          {/* Historique 5 derniers tours */}
+                          {timing.previousLaps && timing.previousLaps.length > 0 && (
+                            <div style={{marginTop: '8px', paddingTop: '8px', borderTop: '1px solid var(--border)'}}>
+                              <div style={{fontSize: '9px', color: 'var(--text-muted)', marginBottom: '4px'}}>📊 5 derniers tours</div>
+                              <div style={{display: 'flex', gap: '4px', justifyContent: 'space-between'}}>
+                                {timing.previousLaps.slice(0, 5).map((t, i) => (
+                                  <div key={i} style={{flex: 1, textAlign: 'center', padding: '4px', background: 'var(--bg-input)', borderRadius: '3px', fontSize: '10px', fontFamily: 'JetBrains Mono'}}>
+                                    {formatTime(t).split(':')[1]?.substring(0, 5) || '--'}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+                    
+                    {/* ═══════════════════════════════════════════════════════════════ */}
+                    {/* v33.19: FREINS - Températures */}
+                    {/* ═══════════════════════════════════════════════════════════════ */}
+                    {(() => {
+                      const brakes = currentTeam?.brakes || {};
+                      
+                      const getBrakeColor = (temp) => {
+                        if (!temp || temp <= 0) return 'var(--text-muted)';
+                        if (temp < 200) return 'var(--blue)'; // Froid
+                        if (temp < 400) return 'var(--green)'; // Optimal
+                        if (temp < 600) return 'var(--orange)'; // Chaud
+                        return 'var(--red)'; // Surchauffe
+                      };
+                      
+                      return (
+                        <div className="card help-tooltip" data-help="FREINS - Températures des disques. Bleu = froid, Vert = optimal (400-600°C), Orange = chaud, Rouge = surchauffe (>700°C)." style={{padding: '12px'}}>
+                          <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px'}}>
+                            <span style={{fontWeight: '700', fontSize: '12px', color: 'var(--text-muted)'}}>🔥 FREINS</span>
+                            <span style={{fontSize: '11px', fontWeight: '600', color: getBrakeColor(brakes.tempAvg)}}>{brakes.tempAvg > 0 ? Math.round(brakes.tempAvg) + '°C' : '--'}</span>
+                          </div>
+                          
+                          <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', marginBottom: '8px'}}>
+                            <div style={{padding: '8px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center', border: '2px solid ' + getBrakeColor(brakes.tempFL)}}>
+                              <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>AVG</div>
+                              <div style={{fontSize: '16px', fontWeight: '700', color: getBrakeColor(brakes.tempFL)}}>{brakes.tempFL > 0 ? Math.round(brakes.tempFL) + '°' : '--'}</div>
+                            </div>
+                            <div style={{padding: '8px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center', border: '2px solid ' + getBrakeColor(brakes.tempFR)}}>
+                              <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>AVD</div>
+                              <div style={{fontSize: '16px', fontWeight: '700', color: getBrakeColor(brakes.tempFR)}}>{brakes.tempFR > 0 ? Math.round(brakes.tempFR) + '°' : '--'}</div>
+                            </div>
+                          </div>
+                          
+                          {/* Répartition freinage */}
+                          <div style={{textAlign: 'center', padding: '6px', background: 'rgba(88,166,255,0.1)', borderRadius: '4px', fontSize: '10px'}}>
+                            Répartition: <strong style={{color: brakes.bias > 0 ? 'var(--cyan)' : 'var(--text-muted)'}}>{brakes.bias > 0 ? brakes.bias.toFixed(1) + '%' : '--'}</strong> avant
+                          </div>
+                        </div>
+                      );
+                    })()}
+                    
+                    {/* ═══════════════════════════════════════════════════════════════ */}
+                    {/* v33.19: ÉLECTRONIQUE - ABS / TC / Map */}
+                    {/* ═══════════════════════════════════════════════════════════════ */}
+                    {(() => {
+                      const elec = currentTeam?.electronics || {};
+                      
+                      return (
+                        <div className="card help-tooltip" data-help="ÉLECTRONIQUE - Niveaux d'ABS, contrôle de traction et mode moteur. Plus le niveau est élevé, plus l'aide est active." style={{padding: '12px'}}>
+                          <div style={{fontWeight: '700', fontSize: '12px', marginBottom: '10px', color: 'var(--text-muted)'}}>⚡ ÉLECTRONIQUE</div>
+                          
+                          <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '6px'}}>
+                            <div style={{padding: '8px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
+                              <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>ABS</div>
+                              <div style={{fontSize: '18px', fontWeight: '700', color: elec.absLevel > 0 ? 'var(--cyan)' : 'var(--text-muted)'}}>{elec.absLevel || '--'}</div>
+                            </div>
+                            <div style={{padding: '8px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
+                              <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>TC</div>
+                              <div style={{fontSize: '18px', fontWeight: '700', color: elec.tcLevel > 0 ? 'var(--orange)' : 'var(--text-muted)'}}>{elec.tcLevel || '--'}</div>
+                            </div>
+                            <div style={{padding: '8px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
+                              <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>MAP</div>
+                              <div style={{fontSize: '18px', fontWeight: '700', color: elec.engineMap > 0 ? 'var(--green)' : 'var(--text-muted)'}}>{elec.engineMap || '--'}</div>
+                            </div>
+                          </div>
+                          
+                          {/* RPM Max */}
+                          <div style={{marginTop: '8px', textAlign: 'center', fontSize: '9px', color: 'var(--text-muted)'}}>
+                            Max: <strong>{elec.maxRPM > 0 ? elec.maxRPM : '--'}</strong> RPM | <strong>{elec.maxGears > 0 ? elec.maxGears : '--'}</strong> rapports
+                          </div>
+                        </div>
+                      );
+                    })()}
+                    
+                    {/* ═══════════════════════════════════════════════════════════════ */}
+                    {/* v33.19: CLASSEMENT CLASSE - Position dans la classe */}
+                    {/* ═══════════════════════════════════════════════════════════════ */}
+                    {(() => {
+                      const standings = currentTeam?.standings || {};
+                      
+                      return (
+                        <div className="card help-tooltip" data-help="CLASSEMENT CLASSE - Position dans votre catégorie si course multi-classes. Affiche aussi le nombre d'adversaires." style={{padding: '12px'}}>
+                          <div style={{fontWeight: '700', fontSize: '12px', marginBottom: '10px', color: 'var(--text-muted)'}}>🏁 CLASSE</div>
+                          
+                          <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px'}}>
+                            <div>
+                              <div style={{fontSize: '9px', color: 'var(--text-muted)'}}>Catégorie</div>
+                              <div style={{fontSize: '14px', fontWeight: '700', color: standings.carClass ? 'var(--gold)' : 'var(--text-muted)'}}>{standings.carClass || 'N/A'}</div>
+                            </div>
+                            <div style={{textAlign: 'right'}}>
+                              <div style={{fontSize: '9px', color: 'var(--text-muted)'}}>Position classe</div>
+                              <div style={{fontSize: '20px', fontWeight: '700', color: standings.bestLapOpponentSameClassPosition > 0 ? 'var(--green)' : 'var(--text-muted)'}}>
+                                {standings.bestLapOpponentSameClassPosition || '-'}/{standings.playerClassOpponentsCount || '-'}
+                              </div>
+                            </div>
+                          </div>
+                          
+                          <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', fontSize: '10px'}}>
+                            <div style={{padding: '6px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
+                              <span style={{color: 'var(--text-muted)'}}>Total</span>
+                              <strong style={{marginLeft: '4px'}}>{standings.opponentsCount || '--'}</strong>
+                            </div>
+                            <div style={{padding: '6px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
+                              <span style={{color: 'var(--text-muted)'}}>Tours</span>
+                              <strong style={{marginLeft: '4px'}}>{standings.completedLaps || '--'}</strong>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
                   
                 </div>
@@ -10194,217 +10396,290 @@
           {/* PAGE COURSE - DUEL CONFIGURABLE + CLASSEMENT + FIL */}
           {/* ═══════════════════════════════════════════════════════════════ */}
           {activePage === 'course' && (
-            <div style={{padding: '12px', maxWidth: '1600px', margin: '0 auto'}}>
+            <div style={{padding: '12px', maxWidth: '1800px', margin: '0 auto'}}>
               
-              {/* PRÉVISIONS MÉTÉO */}
-              <div className="card" style={{padding: '10px', marginBottom: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px'}}>
-                <div style={{display: 'flex', alignItems: 'center', gap: '8px'}}>
-                  <span style={{fontSize: '16px'}}>🌤️</span>
-                  <span style={{fontWeight: '700', fontSize: '11px'}}>PRÉVISIONS</span>
+              {/* ═══════════════════════════════════════════════════════════════ */}
+              {/* v33.19: HEADER MÉTÉO COMPACT */}
+              {/* ═══════════════════════════════════════════════════════════════ */}
+              <div className="card" style={{padding: '8px 12px', marginBottom: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px'}}>
+                <div style={{display: 'flex', alignItems: 'center', gap: '15px'}}>
+                  <span style={{fontSize: '14px'}}>🌤️</span>
+                  <span style={{fontSize: '11px'}}><strong>{meteo.track}°C</strong> piste</span>
+                  <span style={{fontSize: '11px'}}><strong>{meteo.air}°C</strong> air</span>
+                  <span style={{fontSize: '11px'}}>💧 <strong>{meteo.humidity}%</strong></span>
                 </div>
-                <div style={{display: 'flex', gap: '8px'}}>
-                  {meteo.forecast.map((f, i) => (
-                    <div key={i} style={{textAlign: 'center', padding: '4px 8px', background: f.rain > 50 ? 'rgba(88,166,255,0.2)' : 'var(--bg-input)', borderRadius: '4px', border: f.rain > 50 ? '1px solid var(--blue)' : '1px solid transparent'}}>
-                      <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>{f.hour}</div>
-                      <div style={{fontSize: '12px'}}>{f.rain > 50 ? '🌧️' : f.rain > 25 ? '⛅' : '☀️'}</div>
-                      <div style={{fontSize: '10px', fontWeight: '600'}}>{f.temp}°C</div>
-                      <div style={{fontSize: '8px', color: f.rain > 50 ? 'var(--blue)' : 'var(--text-muted)'}}>💧{f.rain}%</div>
+                <div style={{display: 'flex', gap: '6px'}}>
+                  {meteo.forecast.slice(0, 6).map((f, i) => (
+                    <div key={i} style={{textAlign: 'center', padding: '2px 6px', background: f.rain > 50 ? 'rgba(88,166,255,0.2)' : 'var(--bg-input)', borderRadius: '4px', minWidth: '40px'}}>
+                      <div style={{fontSize: '7px', color: 'var(--text-muted)'}}>{f.hour}</div>
+                      <div style={{fontSize: '10px'}}>{f.rain > 50 ? '🌧️' : f.rain > 25 ? '⛅' : '☀️'}</div>
                     </div>
                   ))}
                 </div>
-                {meteo.rainProb > 40 && <div style={{padding: '6px 10px', background: 'rgba(88,166,255,0.15)', borderRadius: '6px', border: '1px solid var(--blue)', display: 'flex', alignItems: 'center', gap: '6px'}}><span style={{fontSize: '14px'}}>⚠️</span><div><div style={{fontWeight: '700', fontSize: '10px', color: 'var(--blue)'}}>PLUIE PROBABLE</div><div style={{fontSize: '8px', color: 'var(--text-muted)'}}>Préparer pneus pluie</div></div></div>}
+                {meteo.rainProb > 40 && <span style={{padding: '4px 10px', background: 'rgba(88,166,255,0.15)', borderRadius: '4px', fontSize: '10px', color: 'var(--blue)', fontWeight: '600'}}>⚠️ PLUIE {meteo.rainProb}%</span>}
               </div>
               
-              <div style={{display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '12px'}}>
+              {/* ═══════════════════════════════════════════════════════════════ */}
+              {/* v33.19: LAYOUT 3 COLONNES - DUEL | CLASSEMENT | FIL */}
+              {/* ═══════════════════════════════════════════════════════════════ */}
+              <div style={{display: 'grid', gridTemplateColumns: '300px 1fr 320px', gap: '10px'}}>
                 
-                {/* GAUCHE: Duel + Classement */}
-                <div style={{display: 'flex', flexDirection: 'column', gap: '10px'}}>
-                  
-                  {/* Duel 3 voitures configurable */}
-                  <div className="card" style={{padding: '12px'}}>
-                    {/* v32.3 FIX: DUEL avec toutes les voitures de la session */}
-                    <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px'}}>
-                      <span style={{fontWeight: '700', fontSize: '13px'}}>⚔️ DUEL</span>
-                      <div style={{display: 'flex', gap: '6px'}}>
-                        {[0, 1, 2].map(i => {
-                          // Utiliser liveAllVehicles si disponible, sinon standings (AGP uniquement)
-                          const allCars = liveAllVehicles.length > 0 
-                            ? liveAllVehicles.map(v => ({ num: String(v.carNumber), team: v.driverName || `#${v.carNumber}`, pos: v.position }))
-                            : standings;
-                          return (
-                            <select key={i} value={duelCars[i]} onChange={e => { const n = [...duelCars]; n[i] = e.target.value; setDuelCars(n); }} className="input" style={{padding: '4px 8px', fontSize: '10px', minWidth: '120px'}}>
-                              {allCars.map(s => <option key={s.num} value={s.num}>#{s.num} {s.team?.substring(0, 15)}</option>)}
-                            </select>
-                          );
-                        })}
-                      </div>
-                    </div>
-                    <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-around'}}>
-                      {duelCars.map((carNum, i) => {
-                        // Chercher dans liveAllVehicles d'abord, puis standings
-                        const liveData = liveAllVehicles.find(v => String(v.carNumber) === carNum);
-                        const car = standings.find(s => s.num === carNum) || {};
-                        const data = telemetryData[carNum] || liveData;
-                        const status = pilotStatus?.[carNum];
-                        const eq = EQUIPES.find(e => e.id === carNum);
-                        const isAGP = ['02', '05', '31', '99'].includes(carNum);
-                        const displayName = liveData?.driverName || car.team || `#${carNum}`;
-                        const borderColor = isAGP ? (eq?.couleur || 'var(--blue)') : 'var(--text-muted)';
-                        const textColor = isAGP ? (eq?.couleur || 'var(--blue)') : 'var(--orange)';
-                        return (
-                          <React.Fragment key={carNum}>
-                            <div style={{textAlign: 'center', padding: '10px', background: 'var(--bg-input)', borderRadius: '8px', borderTop: '3px solid ' + borderColor, minWidth: '90px', position: 'relative'}}>
-                              {status && !status.online && <span style={{position:'absolute', top:'4px', right:'4px', fontSize:'8px', color:'var(--red)', background:'rgba(255,51,68,0.2)', padding:'1px 4px', borderRadius:'3px'}}>OFF</span>}
-                              {liveData?.isInPit === 1 && <span style={{position:'absolute', top:'4px', left:'4px', fontSize:'8px', color:'var(--orange)', background:'rgba(240,136,62,0.2)', padding:'1px 4px', borderRadius:'3px'}}>PIT</span>}
-                              <div style={{fontSize: '16px', fontWeight: '800', color: textColor}}>{carNum}</div>
-                              <div style={{fontSize: '10px', color: 'var(--text-muted)', maxWidth: '80px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{displayName}</div>
-                              <div style={{fontSize: '22px', fontWeight: '800', marginTop: '4px'}}>P{data?.position || liveData?.position || car.pos || '-'}</div>
-                              <div style={{fontSize: '9px', color: 'var(--text-dim)'}}>Tour {data?.currentLap || liveData?.currentLap || car.lap || '-'}</div>
-                            </div>
-                            {i < 2 && (
-                              <div style={{textAlign: 'center', padding: '6px'}}>
-                                <div style={{fontSize: '14px', fontWeight: '700', color: 'var(--cyan)', fontFamily: 'JetBrains Mono'}}>{(() => {
-                                    const car1 = liveAllVehicles.find(v => String(v.carNumber) === carNum);
-                                    const car2 = liveAllVehicles.find(v => String(v.carNumber) === duelCars[i+1]);
-                                    const gap1 = car1?.gapToLeader || telemetryData[carNum]?.gapLeader || car.gap || 0;
-                                    const gap2 = car2?.gapToLeader || telemetryData[duelCars[i+1]]?.gapLeader || (standings.find(s => s.num === duelCars[i+1])?.gap) || 0;
-                                    const diff = Math.abs(gap1 - gap2);
-                                    return diff > 0.1 ? '+' + diff.toFixed(1) + 's' : '+0.0s';
-                                  })()}</div>
-                                <div style={{fontSize: '8px', color: 'var(--text-dim)'}}>#{carNum} → #{duelCars[i+1]}</div>
-                              </div>
-                            )}
-                          </React.Fragment>
-                        );
-                      })}
-                    </div>
+                {/* ═══ COL 1: DUEL CONFIGURABLE ═══ */}
+                <div className="card" style={{padding: '10px'}}>
+                  <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px'}}>
+                    <span style={{fontWeight: '700', fontSize: '12px'}}>⚔️ DUEL</span>
+                    <span style={{fontSize: '9px', color: 'var(--text-muted)'}}>{liveAllVehicles.length} voitures</span>
                   </div>
                   
-                  {/* Classement */}
-                  <div className="card" style={{padding: '12px', flex: 1}}>
-                    <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px'}}>
-                      <span style={{fontWeight: '700', fontSize: '13px'}}>📋 CLASSEMENT</span>
-                      <div style={{display: 'flex', gap: '4px'}}>
-                        <button onClick={() => setFeedFilter(f => ({...f, fullGrid: false}))} style={{padding: '4px 8px', borderRadius: '4px', border: 'none', background: !feedFilter.fullGrid ? 'var(--blue)' : 'var(--bg-input)', color: !feedFilter.fullGrid ? '#fff' : 'var(--text-muted)', fontSize: '9px', cursor: 'pointer'}}>AGP ({standings.length})</button>
-                        <button onClick={() => setFeedFilter(f => ({...f, fullGrid: true}))} style={{padding: '4px 8px', borderRadius: '4px', border: 'none', background: feedFilter.fullGrid ? 'var(--green)' : 'var(--bg-input)', color: feedFilter.fullGrid ? '#fff' : 'var(--text-muted)', fontSize: '9px', cursor: 'pointer'}}>COMPLET ({liveAllVehicles.length})</button>
-                      </div>
-                    </div>
-                    <div style={{maxHeight: '350px', overflowY: 'auto'}}>
-                      <table style={{width: '100%', borderCollapse: 'collapse'}}>
-                        <thead>
-                          <tr style={{fontSize: '10px', color: 'var(--text-muted)'}}>
-                            <th style={{padding: '6px', textAlign: 'left'}}>P</th>
-                            <th style={{padding: '6px', textAlign: 'left'}}>#</th>
-                            <th style={{padding: '6px', textAlign: 'left'}}>{feedFilter.fullGrid ? 'Pilote' : 'Équipe'}</th>
-                            <th style={{padding: '6px', textAlign: 'center'}}>Tour</th>
-                            <th style={{padding: '6px', textAlign: 'right'}}>Dernier</th>
-                            <th style={{padding: '6px', textAlign: 'right'}}>Écart</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {/* v32: Affichage conditionnel AGP ou COMPLET */}
-                          {feedFilter.fullGrid && liveAllVehicles.length > 0 ? (
-                            liveAllVehicles.map((v, idx) => {
-                              const isAGP = ['02', '05', '31', '99', '002', '005', '099'].includes(String(v.carNumber));
-                              return (
-                                <tr key={v.carNumber || idx} style={{
-                                  background: isAGP ? 'rgba(88,166,255,0.15)' : v.isInPit ? 'rgba(240,136,62,0.1)' : 'transparent',
-                                  borderBottom: '1px solid var(--border)',
-                                  borderLeft: isAGP ? '3px solid var(--blue)' : 'none'
-                                }}>
-                                  <td style={{padding: '6px', fontWeight: '700', fontSize: '12px', color: v.position <= 3 ? (v.position === 1 ? '#ffd700' : v.position === 2 ? '#c0c0c0' : '#cd7f32') : 'var(--text)'}}>P{v.position}</td>
-                                  <td style={{padding: '6px', fontWeight: '600', color: isAGP ? 'var(--blue)' : 'var(--orange)', fontSize: '11px'}}>#{v.carNumber}</td>
-                                  <td style={{padding: '6px', fontSize: '10px'}}>{v.driverName || '--'} {v.isInPit ? <span style={{color: 'var(--orange)'}}>📍</span> : ''}</td>
-                                  <td style={{padding: '6px', textAlign: 'center', fontSize: '10px', fontWeight: '600'}}>{v.currentLap || 0}</td>
-                                  <td style={{padding: '6px', textAlign: 'right', fontFamily: 'JetBrains Mono', fontSize: '9px', color: 'var(--cyan)'}}>{v.lastLapTime || '--'}</td>
-                                  <td style={{padding: '6px', textAlign: 'right', fontFamily: 'JetBrains Mono', fontSize: '9px', color: 'var(--text-muted)'}}>{v.position === 1 ? 'LEADER' : v.gapToLeader ? '+' + v.gapToLeader.toFixed(1) + 's' : '--'}</td>
-                                </tr>
-                              );
-                            })
-                          ) : (
-                            standings.map(s => (
-                              <tr key={s.num} style={{background: s.online ? 'rgba(63,185,80,0.1)' : 'rgba(255,51,68,0.1)', borderBottom: '1px solid var(--border)'}}>
-                                <td style={{padding: '8px', fontWeight: '700', fontSize: '14px'}}>P{s.pos}</td>
-                                <td style={{padding: '8px', fontWeight: '700', color: 'var(--orange)', fontSize: '12px'}}>#{s.num}</td>
-                                <td style={{padding: '8px', fontSize: '11px'}}>{s.team}<br/><span style={{fontSize: '9px', color: 'var(--cyan)'}}>{s.driver}</span></td>
-                                <td style={{padding: '8px', textAlign: 'center', fontSize: '11px', fontWeight: '600'}}>{s.lap}</td>
-                                <td style={{padding: '8px', textAlign: 'right', fontFamily: 'JetBrains Mono', fontSize: '10px', color: s.lastLapTime && s.lastLapTime !== '--:--.---' ? 'var(--cyan)' : 'var(--text-dim)'}}>{s.lastLapTime || '--:--.---'}</td>
-                                <td style={{padding: '8px', textAlign: 'right', fontFamily: 'JetBrains Mono', fontSize: '10px', color: 'var(--text-muted)'}}>{s.pos === 1 ? 'LEADER' : '+' + (s.gap || 0).toFixed(1) + 's'}</td>
-                              </tr>
-                            ))
+                  {/* Sélection 3 voitures */}
+                  <div style={{display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '10px'}}>
+                    {[0, 1, 2].map(i => {
+                      const allCars = liveAllVehicles.length > 0 
+                        ? liveAllVehicles.sort((a,b) => a.position - b.position).map(v => ({ 
+                            num: String(v.carNumber), 
+                            name: v.driverName || `#${v.carNumber}`,
+                            pos: v.position,
+                            isAGP: ['02','05','31','99','002','005','031','099'].includes(String(v.carNumber))
+                          }))
+                        : standings.map(s => ({ num: s.num, name: s.team, pos: s.pos, isAGP: true }));
+                      return (
+                        <select key={i} value={duelCars[i]} onChange={e => { const n = [...duelCars]; n[i] = e.target.value; setDuelCars(n); }} className="input" style={{padding: '6px 8px', fontSize: '10px', background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: '4px'}}>
+                          {allCars.map(c => (
+                            <option key={c.num} value={c.num} style={{background: c.isAGP ? 'rgba(88,166,255,0.2)' : 'transparent'}}>
+                              P{c.pos} #{c.num} {c.name.substring(0, 18)}
+                            </option>
+                          ))}
+                        </select>
+                      );
+                    })}
+                  </div>
+                  
+                  {/* Affichage Duel Vertical */}
+                  <div style={{display: 'flex', flexDirection: 'column', gap: '4px'}}>
+                    {duelCars.map((carNum, i) => {
+                      const liveData = liveAllVehicles.find(v => String(v.carNumber) === carNum);
+                      const data = telemetryData[carNum] || liveData || {};
+                      const isAGP = ['02','05','31','99','002','005','031','099'].includes(carNum);
+                      const eq = EQUIPES.find(e => e.id === carNum);
+                      const borderColor = isAGP ? (eq?.couleur || 'var(--blue)') : 'var(--orange)';
+                      const displayName = liveData?.driverName || data.driverName || `#${carNum}`;
+                      
+                      // Calcul écart avec voiture suivante
+                      let gapToNext = null;
+                      if (i < 2) {
+                        const nextCar = liveAllVehicles.find(v => String(v.carNumber) === duelCars[i+1]);
+                        const thisGap = liveData?.gapToLeader || data.gapLeader || 0;
+                        const nextGap = nextCar?.gapToLeader || telemetryData[duelCars[i+1]]?.gapLeader || 0;
+                        gapToNext = Math.abs(thisGap - nextGap);
+                      }
+                      
+                      return (
+                        <React.Fragment key={carNum}>
+                          <div style={{
+                            display: 'flex', alignItems: 'center', gap: '8px',
+                            padding: '8px', background: 'var(--bg-input)', borderRadius: '6px',
+                            borderLeft: '4px solid ' + borderColor
+                          }}>
+                            <div style={{fontSize: '18px', fontWeight: '800', color: borderColor, minWidth: '30px'}}>P{data.position || liveData?.position || '-'}</div>
+                            <div style={{flex: 1}}>
+                              <div style={{fontSize: '14px', fontWeight: '700', color: borderColor}}>#{carNum}</div>
+                              <div style={{fontSize: '9px', color: 'var(--text-muted)', maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{displayName}</div>
+                            </div>
+                            <div style={{textAlign: 'right'}}>
+                              <div style={{fontSize: '10px', color: 'var(--cyan)', fontFamily: 'JetBrains Mono'}}>{data.lastLapTime || liveData?.lastLapTime || '--:--.---'}</div>
+                              <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>T{data.currentLap || liveData?.currentLap || '-'}</div>
+                            </div>
+                            {(liveData?.isInPit === 1 || data.isInPit === 1) && <span style={{fontSize: '10px', color: 'var(--orange)'}}>📍</span>}
+                          </div>
+                          {i < 2 && gapToNext !== null && (
+                            <div style={{textAlign: 'center', padding: '2px', fontSize: '11px', fontWeight: '700', color: gapToNext < 1 ? 'var(--red)' : 'var(--cyan)', fontFamily: 'JetBrains Mono'}}>
+                              ↕️ +{gapToNext.toFixed(1)}s
+                            </div>
                           )}
-                        </tbody>
-                      </table>
-                    </div>
-                    {!feedFilter.fullGrid && standings.filter(s => !s.online).length > 0 && (
-                      <div style={{marginTop: '8px', padding: '6px', background: 'rgba(255,51,68,0.1)', borderRadius: '4px', fontSize: '10px', color: 'var(--red)'}}>
-                        ⚠️ {standings.filter(s => !s.online).length} équipe(s) offline
-                      </div>
-                    )}
-                    {feedFilter.fullGrid && liveAllVehicles.length === 0 && (
-                      <div style={{marginTop: '8px', padding: '10px', background: 'rgba(240,192,0,0.1)', borderRadius: '4px', fontSize: '10px', color: 'var(--yellow)', textAlign: 'center'}}>
-                        ⏳ En attente des données allVehicles du plugin SimHub...
-                      </div>
-                    )}
+                        </React.Fragment>
+                      );
+                    })}
                   </div>
                 </div>
                 
-                {/* DROITE: Fil de course */}
-                <div className="card" style={{padding: '12px'}}>
-                  <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px'}}>
-                    <span style={{fontWeight: '700', fontSize: '13px'}}>📡 FIL DE COURSE</span>
-                    <span style={{fontSize: '8px', color: 'var(--green)'}}>● LIVE ({raceEvents.length})</span>
+                {/* ═══ COL 2: CLASSEMENT COMPLET ═══ */}
+                <div className="card" style={{padding: '10px'}}>
+                  <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px'}}>
+                    <span style={{fontWeight: '700', fontSize: '12px'}}>📋 CLASSEMENT</span>
+                    <div style={{display: 'flex', gap: '4px'}}>
+                      <button onClick={() => setFeedFilter(f => ({...f, fullGrid: false}))} style={{padding: '4px 10px', borderRadius: '4px', border: 'none', background: !feedFilter.fullGrid ? 'var(--blue)' : 'var(--bg-input)', color: !feedFilter.fullGrid ? '#fff' : 'var(--text-muted)', fontSize: '9px', fontWeight: '600', cursor: 'pointer'}}>
+                        ⭐ AGP ({standings.length})
+                      </button>
+                      <button onClick={() => setFeedFilter(f => ({...f, fullGrid: true}))} style={{padding: '4px 10px', borderRadius: '4px', border: 'none', background: feedFilter.fullGrid ? 'var(--green)' : 'var(--bg-input)', color: feedFilter.fullGrid ? '#fff' : 'var(--text-muted)', fontSize: '9px', fontWeight: '600', cursor: 'pointer'}}>
+                        🏁 TOUS ({liveAllVehicles.length})
+                      </button>
+                    </div>
                   </div>
                   
-                  {/* Filtres */}
-                  <div style={{display: 'flex', gap: '4px', marginBottom: '10px', flexWrap: 'wrap'}}>
-                    {[['agp', '⭐ AGP'], ['pit', '🔧 Pit'], ['flag', '🚩 Flag'], ['best', '🏆 Best']].map(([key, label]) => (
-                      <button key={key} onClick={() => setFeedFilter(f => ({...f, [key]: !f[key]}))} style={{
-                        padding: '3px 8px', borderRadius: '10px', border: 'none',
+                  <div style={{maxHeight: '450px', overflowY: 'auto'}}>
+                    <table style={{width: '100%', borderCollapse: 'collapse'}}>
+                      <thead style={{position: 'sticky', top: 0, background: 'var(--bg-card)', zIndex: 1}}>
+                        <tr style={{fontSize: '9px', color: 'var(--text-muted)', textTransform: 'uppercase'}}>
+                          <th style={{padding: '6px 4px', textAlign: 'left', width: '35px'}}>Pos</th>
+                          <th style={{padding: '6px 4px', textAlign: 'left', width: '40px'}}>#</th>
+                          <th style={{padding: '6px 4px', textAlign: 'left'}}>Pilote / Équipe</th>
+                          <th style={{padding: '6px 4px', textAlign: 'center', width: '45px'}}>Tour</th>
+                          <th style={{padding: '6px 4px', textAlign: 'right', width: '75px'}}>Dernier</th>
+                          <th style={{padding: '6px 4px', textAlign: 'right', width: '70px'}}>Écart</th>
+                          <th style={{padding: '6px 4px', textAlign: 'center', width: '35px'}}>État</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {feedFilter.fullGrid && liveAllVehicles.length > 0 ? (
+                          liveAllVehicles.sort((a,b) => a.position - b.position).map((v, idx) => {
+                            const isAGP = ['02','05','31','99','002','005','031','099'].includes(String(v.carNumber));
+                            const eq = EQUIPES.find(e => e.id === String(v.carNumber));
+                            const posColor = v.position === 1 ? '#ffd700' : v.position === 2 ? '#c0c0c0' : v.position === 3 ? '#cd7f32' : 'var(--text)';
+                            return (
+                              <tr key={v.carNumber || idx} style={{
+                                background: isAGP ? 'rgba(88,166,255,0.1)' : idx % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.02)',
+                                borderBottom: '1px solid var(--border)',
+                                borderLeft: isAGP ? '3px solid ' + (eq?.couleur || 'var(--blue)') : 'none'
+                              }}>
+                                <td style={{padding: '5px 4px', fontWeight: '700', fontSize: '13px', color: posColor}}>
+                                  {v.position <= 3 ? ['🥇','🥈','🥉'][v.position-1] : 'P' + v.position}
+                                </td>
+                                <td style={{padding: '5px 4px', fontWeight: '700', color: isAGP ? (eq?.couleur || 'var(--blue)') : 'var(--orange)', fontSize: '11px'}}>
+                                  {v.carNumber}
+                                </td>
+                                <td style={{padding: '5px 4px', fontSize: '10px', maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>
+                                  {v.driverName || '--'}
+                                  {v.carClass && <span style={{marginLeft: '4px', fontSize: '8px', padding: '1px 4px', background: 'var(--bg-input)', borderRadius: '3px', color: 'var(--text-muted)'}}>{v.carClass}</span>}
+                                </td>
+                                <td style={{padding: '5px 4px', textAlign: 'center', fontSize: '10px', fontWeight: '600'}}>{v.currentLap || 0}</td>
+                                <td style={{padding: '5px 4px', textAlign: 'right', fontFamily: 'JetBrains Mono', fontSize: '9px', color: 'var(--cyan)'}}>{v.lastLapTime || '--'}</td>
+                                <td style={{padding: '5px 4px', textAlign: 'right', fontFamily: 'JetBrains Mono', fontSize: '9px', color: v.position === 1 ? 'var(--gold)' : 'var(--text-muted)'}}>
+                                  {v.position === 1 ? 'LEADER' : v.gapToLeader ? '+' + v.gapToLeader.toFixed(1) : '--'}
+                                </td>
+                                <td style={{padding: '5px 4px', textAlign: 'center', fontSize: '10px'}}>
+                                  {v.isInPit === 1 ? <span title="En pit">📍</span> : <span style={{color: 'var(--green)'}}>●</span>}
+                                </td>
+                              </tr>
+                            );
+                          })
+                        ) : (
+                          standings.map((s, idx) => (
+                            <tr key={s.num} style={{
+                              background: s.online ? (idx % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.02)') : 'rgba(255,51,68,0.05)',
+                              borderBottom: '1px solid var(--border)',
+                              borderLeft: '3px solid ' + (EQUIPES.find(e => e.id === s.num)?.couleur || 'var(--orange)')
+                            }}>
+                              <td style={{padding: '5px 4px', fontWeight: '700', fontSize: '13px', color: s.pos <= 3 ? ['#ffd700','#c0c0c0','#cd7f32'][s.pos-1] : 'var(--text)'}}>
+                                {s.pos <= 3 ? ['🥇','🥈','🥉'][s.pos-1] : 'P' + s.pos}
+                              </td>
+                              <td style={{padding: '5px 4px', fontWeight: '700', color: EQUIPES.find(e => e.id === s.num)?.couleur || 'var(--orange)', fontSize: '11px'}}>{s.num}</td>
+                              <td style={{padding: '5px 4px'}}>
+                                <div style={{fontSize: '10px', fontWeight: '600'}}>{s.team}</div>
+                                <div style={{fontSize: '8px', color: 'var(--cyan)'}}>{s.driver}</div>
+                              </td>
+                              <td style={{padding: '5px 4px', textAlign: 'center', fontSize: '10px', fontWeight: '600'}}>{s.lap}</td>
+                              <td style={{padding: '5px 4px', textAlign: 'right', fontFamily: 'JetBrains Mono', fontSize: '9px', color: 'var(--cyan)'}}>{s.lastLapTime || '--'}</td>
+                              <td style={{padding: '5px 4px', textAlign: 'right', fontFamily: 'JetBrains Mono', fontSize: '9px'}}>{s.pos === 1 ? 'LEADER' : '+' + (s.gap || 0).toFixed(1)}</td>
+                              <td style={{padding: '5px 4px', textAlign: 'center'}}>{s.online ? <span style={{color: 'var(--green)'}}>●</span> : <span style={{color: 'var(--red)'}}>○</span>}</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                  
+                  {feedFilter.fullGrid && liveAllVehicles.length === 0 && (
+                    <div style={{padding: '20px', textAlign: 'center', color: 'var(--yellow)', fontSize: '11px'}}>
+                      ⏳ En attente du plugin SimHub v3.3.2...<br/>
+                      <span style={{fontSize: '9px', color: 'var(--text-muted)'}}>Les données allVehicles apparaîtront ici</span>
+                    </div>
+                  )}
+                </div>
+                
+                {/* ═══ COL 3: FIL DE COURSE ═══ */}
+                <div className="card" style={{padding: '10px'}}>
+                  <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px'}}>
+                    <span style={{fontWeight: '700', fontSize: '12px'}}>📡 FIL DE COURSE</span>
+                    <span style={{fontSize: '9px', color: 'var(--green)'}}>● LIVE</span>
+                  </div>
+                  
+                  {/* Filtres compacts */}
+                  <div style={{display: 'flex', gap: '3px', marginBottom: '8px', flexWrap: 'wrap'}}>
+                    {[
+                      ['agp', '⭐', 'AGP uniquement'],
+                      ['pit', '🔧', 'Pit stops'],
+                      ['flag', '🚩', 'Drapeaux'],
+                      ['best', '🏆', 'Meilleurs tours'],
+                      ['overtake', '🔄', 'Dépassements']
+                    ].map(([key, icon, title]) => (
+                      <button key={key} title={title} onClick={() => setFeedFilter(f => ({...f, [key]: !f[key]}))} style={{
+                        padding: '4px 6px', borderRadius: '4px', border: 'none',
                         background: feedFilter[key] ? 'var(--blue)' : 'var(--bg-input)',
                         color: feedFilter[key] ? '#fff' : 'var(--text-muted)',
-                        fontSize: '9px', cursor: 'pointer'
-                      }}>{label}</button>
+                        fontSize: '10px', cursor: 'pointer'
+                      }}>{icon}</button>
                     ))}
                   </div>
                   
-                  {/* Feed - v32: Événements réels */}
-                  <div style={{maxHeight: '400px', overflowY: 'auto'}}>
+                  {/* Feed événements */}
+                  <div style={{maxHeight: '420px', overflowY: 'auto'}}>
                     {raceEvents.length === 0 ? (
-                      <div style={{padding: '20px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '11px'}}>
-                        En attente d'événements...<br/>
-                        <span style={{fontSize: '9px'}}>Les pit stops et drapeaux apparaîtront ici</span>
+                      <div style={{padding: '30px 15px', textAlign: 'center', color: 'var(--text-dim)'}}>
+                        <div style={{fontSize: '30px', marginBottom: '10px'}}>📡</div>
+                        <div style={{fontSize: '11px'}}>En attente d'événements...</div>
+                        <div style={{fontSize: '9px', color: 'var(--text-muted)', marginTop: '6px'}}>
+                          Pit stops, drapeaux, meilleurs tours<br/>apparaîtront automatiquement
+                        </div>
                       </div>
                     ) : (
                       raceEvents.filter(ev => {
                         if (ev.type === 'flag' && !feedFilter.flag) return false;
                         if ((ev.type === 'pit-in' || ev.type === 'pit-out') && !feedFilter.pit) return false;
                         if (ev.type === 'best' && !feedFilter.best) return false;
-                        // v32.4: Les événements 'session' passent toujours
+                        if (ev.type === 'overtake' && !feedFilter.overtake) return false;
                         if (ev.type === 'session') return true;
-                        // Filtre AGP: si activé, montrer seulement les événements des équipes AGP
                         if (feedFilter.agp) {
-                          const agpCars = ['02', '05', '31', '99', '002', '005', '031', '099'];
+                          const agpCars = ['02','05','31','99','002','005','031','099'];
                           const carNum = ev.carNum || (ev.message && ev.message.match(/#(\d+)/)?.[1]);
                           if (carNum && !agpCars.includes(String(carNum))) return false;
                         }
                         return true;
-                      }).slice(0, 50).map((ev, i) => (
-                        <div key={i} style={{
-                          padding: '8px', 
-                          borderBottom: '1px solid var(--border)', 
-                          display: 'flex', 
-                          gap: '8px', 
-                          alignItems: 'center',
-                          borderLeft: ev.type === 'pit-in' ? '3px solid var(--orange)' : ev.type === 'pit-out' ? '3px solid var(--green)' : ev.type === 'flag' ? '3px solid var(--yellow)' : ev.type === 'best' ? '3px solid var(--gold, #ffd700)' : ev.type === 'session' ? '3px solid var(--cyan)' : 'none',
-                          background: ev.type === 'flag' ? 'rgba(240,192,0,0.1)' : ev.type === 'best' ? 'rgba(255,215,0,0.1)' : ev.type === 'session' ? 'rgba(0,255,255,0.1)' : 'transparent'
-                        }}>
-                          <span style={{fontSize: '9px', color: 'var(--text-dim)', minWidth: '50px'}}>{ev.time}</span>
-                          <span style={{fontSize: '14px'}}>{ev.icon}</span>
-                          <span style={{fontSize: '11px', color: ev.type === 'best' ? 'var(--gold, #ffd700)' : 'var(--text)'}}>{ev.message}</span>
-                        </div>
-                      ))
+                      }).slice(0, 60).map((ev, i) => {
+                        const typeStyles = {
+                          'pit-in': { border: 'var(--orange)', bg: 'rgba(240,136,62,0.1)' },
+                          'pit-out': { border: 'var(--green)', bg: 'rgba(63,185,80,0.1)' },
+                          'flag': { border: 'var(--yellow)', bg: 'rgba(240,192,0,0.15)' },
+                          'best': { border: '#ffd700', bg: 'rgba(255,215,0,0.15)' },
+                          'session': { border: 'var(--cyan)', bg: 'rgba(0,255,255,0.1)' },
+                          'overtake': { border: 'var(--purple, #a855f7)', bg: 'rgba(168,85,247,0.1)' }
+                        };
+                        const style = typeStyles[ev.type] || { border: 'var(--border)', bg: 'transparent' };
+                        
+                        return (
+                          <div key={i} style={{
+                            padding: '6px 8px', 
+                            marginBottom: '4px',
+                            borderRadius: '4px',
+                            borderLeft: '3px solid ' + style.border,
+                            background: style.bg,
+                            display: 'flex', 
+                            gap: '6px', 
+                            alignItems: 'center'
+                          }}>
+                            <span style={{fontSize: '8px', color: 'var(--text-dim)', minWidth: '42px', fontFamily: 'JetBrains Mono'}}>{ev.time}</span>
+                            <span style={{fontSize: '12px'}}>{ev.icon}</span>
+                            <span style={{fontSize: '10px', color: ev.type === 'best' ? '#ffd700' : 'var(--text)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{ev.message}</span>
+                          </div>
+                        );
+                      })
                     )}
+                  </div>
+                  
+                  {/* Stats résumé */}
+                  <div style={{marginTop: '8px', paddingTop: '8px', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'space-around', fontSize: '9px', color: 'var(--text-muted)'}}>
+                    <span>🔧 {raceEvents.filter(e => e.type === 'pit-in').length} pits</span>
+                    <span>🚩 {raceEvents.filter(e => e.type === 'flag').length} flags</span>
+                    <span>🏆 {raceEvents.filter(e => e.type === 'best').length} bests</span>
                   </div>
                 </div>
                 
@@ -10537,6 +10812,9 @@
       
       // ═══ v33.17: TEMPS RF2 RÉEL - Remonté depuis LiveView ═══
       const [rf2SessionElapsed, setRF2SessionElapsed] = useState(null);
+      
+      // ═══ v33.18: TEMPS RESTANT RF2 - Pour countdown en toutes sessions ═══
+      const [rf2SessionRemaining, setRF2SessionRemaining] = useState(null);
       
       // ═══ MODE ENTRAINEMENT / COURSE v29 ═══
       const [raceMode, setRaceMode] = useState(() => {
@@ -11259,11 +11537,14 @@
           {/* BARRE UNIQUE - Chrono + Tabs au milieu + Tours + Photo */}
           <div className="card main-chrono-bar" style={{padding:'8px 12px',marginBottom:'12px'}}>
             <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:'10px'}}>
-              {/* Chronos à gauche - v33.17: Afficher temps rF2 réel si disponible */}
+              {/* Chronos à gauche - v33.18: Afficher temps rF2 réel si disponible */}
               {(() => {
-                // v33.17: Utiliser le temps rF2 réel si disponible, sinon fallback chrono manuel
+                // v33.18: Utiliser le temps rF2 réel si disponible, sinon fallback chrono manuel
                 const isRF2Active = rf2SessionElapsed !== null && rf2SessionElapsed > 0;
+                const isRF2RemainingActive = rf2SessionRemaining !== null && rf2SessionRemaining > 0;
                 const effectiveElapsed = isRF2Active ? rf2SessionElapsed : chronoState.elapsed;
+                // v33.18: Pour le countdown, utiliser sessionTimeRemaining de rF2 si disponible
+                const effectiveRemaining = isRF2RemainingActive ? rf2SessionRemaining : Math.max(0, totalSec - effectiveElapsed);
                 return (
                   <div className="chrono-display" style={{display:'flex',alignItems:'center',gap:'8px'}}>
                     <div style={{textAlign:'center'}}>
@@ -11274,8 +11555,8 @@
                     </div>
                     <div style={{color:'var(--text-dim)',fontSize:'18px',fontWeight:'300'}}>/</div>
                     <div style={{textAlign:'center'}}>
-                      <div className="mono" style={{fontSize:'24px',fontWeight:'800',color:'var(--red)'}}>{formatDur(Math.max(0, totalSec - effectiveElapsed))}</div>
-                      <div style={{fontSize:'9px',color:'var(--red)',opacity:0.7}}>RESTANT</div>
+                      <div className="mono" style={{fontSize:'24px',fontWeight:'800',color:'var(--red)'}}>{formatDur(effectiveRemaining)}</div>
+                      <div style={{fontSize:'9px',color:'var(--red)',opacity:0.7}}>RESTANT {isRF2RemainingActive && <span style={{color:'var(--cyan)',fontWeight:'700'}}>🔴 rF2</span>}</div>
                     </div>
                   </div>
                 );
@@ -11552,6 +11833,7 @@
               }
             }}
             onRF2Elapsed={setRF2SessionElapsed}
+            onRF2Remaining={setRF2SessionRemaining}
             onApplyReferences={(newPilotComboTimes, newPilotComboCons) => {
               // v32.5: Appliquer les références de temps aux paramètres de l'équipe active
               setTeams(prev => prev.map((t, idx) => {
