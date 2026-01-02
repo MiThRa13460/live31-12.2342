@@ -2,19 +2,27 @@
 <!--
   ═══════════════════════════════════════════════════════════════════
   TEAM AGP - Endurance Strategy Dashboard
-  v33.15 - Header redesigné + Fullscreen + Préférences persistantes
+  v33.17 - CHRONO: Affiche temps rF2 réel (sessionElapsed)
   ═══════════════════════════════════════════════════════════════════
   
-  CHANGELOG v33.15 (01/01/2026):
-  - REDESIGN: Header propre en 2 lignes (Ligne 1: Logo/Météo/Chronos, Ligne 2: Nav/Actions)
-  - NEW: Bouton plein écran (⛶) pour masquer la barre navigateur
-  - NEW: Préférences UI sauvegardées automatiquement (localStorage)
-        → Page active, alertes ON/OFF, tooltips ON/OFF
-  - FIX: Erreur "raceSessionTime is not defined" dans MainApp
-  - CONFIRM: Météo rF2 LIVE = vraies données session via SimHub
+  CHANGELOG v33.17 (02/01/2026):
+  - CHRONO PRINCIPAL: Affiche le temps rF2 réel (sessionElapsed) en temps réel
+        → Nouveau state rf2SessionElapsed remonté depuis LiveView
+        → Indicateur 🔴 rF2 quand synchronisé avec le simulateur
+        → Fallback sur chrono manuel si pas de données rF2
+  
+  CHANGELOG v33.16 (02/01/2026):
+  - FIX CRITIQUE: getTyreWear() ne doit plus inverser les valeurs
+        → Le plugin v3.3.0 envoie DÉJÀ le % restant
+        → Avant: plugin 98% → HTML 100-98 = 2% ❌
+        → Après: plugin 98% → HTML 98% ✅
+  
+  CHANGELOG v33.15:
+  - REDESIGN: Header 2 lignes, bouton fullscreen, prefs localStorage
+  - FIX: Erreur "raceSessionTime is not defined"
   
   CHANGELOG v33.14:
-  - NEW: Chrono actif en toute session (Practice, Warmup, Qualif)
+  - NEW: Chrono actif en Practice, Warmup, Qualif
   - NEW: Estimation dégâts indirects via températures
   
   CHANGELOG v33.13:
@@ -26,7 +34,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>TEAM AGP - Endurance Strategy 24h v33.12</title>
+  <title>TEAM AGP - Endurance Strategy 24h v33.17</title>
   <script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
@@ -6541,7 +6549,7 @@
     };
 
     // ========== LIVE TELEMETRY VIEW ==========
-    const LiveView = ({ raceConfig, pilots, teams = [], onImportData, onSyncChrono, onSyncChronoDirect, onStintUpdate, onAddIncident, onAutoImportChrono, onApplyReferences, collectedData: externalCollectedData, setCollectedData: externalSetCollectedData, pilotStatus: externalPilotStatus, setPilotStatus: externalSetPilotStatus, chronoState: externalChronoState, sessionId, uxSettings = {}, raceMode = 'training', teamCarNumber = '05' }) => {
+    const LiveView = ({ raceConfig, pilots, teams = [], onImportData, onSyncChrono, onSyncChronoDirect, onRF2Elapsed, onStintUpdate, onAddIncident, onAutoImportChrono, onApplyReferences, collectedData: externalCollectedData, setCollectedData: externalSetCollectedData, pilotStatus: externalPilotStatus, setPilotStatus: externalSetPilotStatus, chronoState: externalChronoState, sessionId, uxSettings = {}, raceMode = 'training', teamCarNumber = '05' }) => {
       // ═══════════════════════════════════════════════════════════════════
       // LIVE VIEW V2 - 2 PAGES COMPLÈTES: ÉQUIPE + COURSE
       // ═══════════════════════════════════════════════════════════════════
@@ -6656,15 +6664,14 @@
       const formatLapTime = (t) => { if (!t || t.includes('--')) return '--:--.---'; let clean = t.replace(/^00:/, ''); const m = clean.match(/(\d+):(\d+)\.(\d{3})/); return m ? parseInt(m[1]) + ':' + m[2] + '.' + m[3] : clean.substring(0,9); };
       const formatChrono = (s) => { if (!s && s !== 0) return '--:--:--'; const h = Math.floor(Math.abs(s)/3600); const m = Math.floor((Math.abs(s)%3600)/60); const sec = Math.floor(Math.abs(s)%60); return h.toString().padStart(2,'0')+':'+m.toString().padStart(2,'0')+':'+sec.toString().padStart(2,'0'); };
       const getTyreWear = (w) => { 
-        // v33.10 FIX: Le plugin envoie % USURE, on affiche % RESTANT
-        // Plugin v3.3.0: (1 - wear) * 100 où wear=0.02 donne 98 (FAUX car rF2 wear=0.98 = 98% restant)
-        // Donc on doit INVERSER: 100 - valeur_reçue
+        // v33.16 FIX: Le plugin v3.3.0 envoie DÉJÀ le % RESTANT (ligne 547: (1-wear)*100)
+        // Donc on NE DOIT PAS inverser, on retourne la valeur directement
         if (w === undefined || w === null) return 100; 
-        if (w < 0) return Math.min(100, Math.max(0, 100 + w));
-        // Si valeur 0-1.5 (décimal d'usure) → inverser: 100 - (w * 100)
-        if (w > 0 && w <= 1.5) return Math.round(100 - (w * 100));
-        // Si valeur 0-100 (% d'usure) → inverser: 100 - w
-        if (w >= 0 && w <= 100) return Math.min(100, Math.max(0, Math.round(100 - w)));
+        if (w < 0) return 100; // Valeur négative = erreur, assumer neuf
+        // Si valeur décimale 0-1.5 (rF2 raw non transformé) → convertir en %
+        if (w > 0 && w <= 1.5) return Math.round((1 - w) * 100);
+        // Si valeur 0-100 (% restant du plugin) → retourner directement
+        if (w >= 0 && w <= 100) return Math.min(100, Math.max(0, Math.round(w)));
         return 100; 
       };
       const getTyreColor = (w) => { const wear = getTyreWear(w); return wear >= 70 ? 'var(--green)' : wear >= 40 ? 'var(--orange)' : 'var(--red)'; };
@@ -8469,6 +8476,11 @@
               const hasLaps = Object.values(rawData).some(car => car?.currentLap >= 1);
               const sessionActive = isNonRaceSession && sessionElapsed > 30;
               const raceEffectivelyStarted = isRaceStarted || sessionActive || hasLaps || (sessionElapsed > 120);
+              
+              // ═══ v33.17: REMONTER sessionElapsed au niveau App pour chrono principal ═══
+              if (sessionElapsed > 0 && onRF2Elapsed) {
+                onRF2Elapsed(Math.floor(sessionElapsed));
+              }
               
               if (sessionElapsed > 0 && onSyncChrono && externalChronoState && raceEffectivelyStarted) {
               // v33.14: Log la détection de session active
@@ -10523,6 +10535,9 @@
       
       const [chronoState, setChronoState] = useState(() => { try { let saved = JSON.parse(localStorage.getItem(SKEY + '-chrono-' + sessionId)); if (!saved) { const v14Chrono = localStorage.getItem('agp-v14-chrono-' + sessionId); if (v14Chrono) saved = JSON.parse(v14Chrono); } if (saved) return saved; } catch(e){} return { isRunning: false, elapsed: 0, startTs: null, offset: 0 }; });
       
+      // ═══ v33.17: TEMPS RF2 RÉEL - Remonté depuis LiveView ═══
+      const [rf2SessionElapsed, setRF2SessionElapsed] = useState(null);
+      
       // ═══ MODE ENTRAINEMENT / COURSE v29 ═══
       const [raceMode, setRaceMode] = useState(() => {
         try {
@@ -11233,7 +11248,7 @@
             </div>
           </header>
 
-          <StatusBar teams={teams} elapsed={chronoState.elapsed} isRunning={chronoState.isRunning} totalSec={totalSec} activeIdx={activeIdx} onSelectTeam={setActiveIdx} />
+          <StatusBar teams={teams} elapsed={rf2SessionElapsed !== null && rf2SessionElapsed > 0 ? rf2SessionElapsed : chronoState.elapsed} isRunning={chronoState.isRunning} totalSec={totalSec} activeIdx={activeIdx} onSelectTeam={setActiveIdx} />
           
           {/* Guide rapide - affiché au premier lancement */}
           {showQuickGuide && uxSettings.showQuickGuide !== false && window.AGP_QuickGuide && React.createElement(window.AGP_QuickGuide, {
@@ -11244,20 +11259,27 @@
           {/* BARRE UNIQUE - Chrono + Tabs au milieu + Tours + Photo */}
           <div className="card main-chrono-bar" style={{padding:'8px 12px',marginBottom:'12px'}}>
             <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:'10px'}}>
-              {/* Chronos à gauche */}
-              <div className="chrono-display" style={{display:'flex',alignItems:'center',gap:'8px'}}>
-                <div style={{textAlign:'center'}}>
-                  <div className="mono" style={{fontSize:'24px',fontWeight:'800',color:'var(--green)'}}>{formatDur(chronoState.elapsed)}</div>
-                  <div style={{fontSize:'9px',color:'var(--green)',opacity:0.7}}>ÉCOULÉ</div>
-                  {isTrainingMode && <div style={{fontSize:'8px',color:'var(--orange)',fontWeight:'700',marginTop:'2px'}}>🏋️ TRAINING</div>}
-                  {isRaceMode && <div style={{fontSize:'8px',color:'var(--green)',fontWeight:'700',marginTop:'2px'}}>🏁 COURSE</div>}
-                </div>
-                <div style={{color:'var(--text-dim)',fontSize:'18px',fontWeight:'300'}}>/</div>
-                <div style={{textAlign:'center'}}>
-                  <div className="mono" style={{fontSize:'24px',fontWeight:'800',color:'var(--red)'}}>{formatDur(Math.max(0, totalSec - chronoState.elapsed))}</div>
-                  <div style={{fontSize:'9px',color:'var(--red)',opacity:0.7}}>RESTANT</div>
-                </div>
-              </div>
+              {/* Chronos à gauche - v33.17: Afficher temps rF2 réel si disponible */}
+              {(() => {
+                // v33.17: Utiliser le temps rF2 réel si disponible, sinon fallback chrono manuel
+                const isRF2Active = rf2SessionElapsed !== null && rf2SessionElapsed > 0;
+                const effectiveElapsed = isRF2Active ? rf2SessionElapsed : chronoState.elapsed;
+                return (
+                  <div className="chrono-display" style={{display:'flex',alignItems:'center',gap:'8px'}}>
+                    <div style={{textAlign:'center'}}>
+                      <div className="mono" style={{fontSize:'24px',fontWeight:'800',color:'var(--green)'}}>{formatDur(effectiveElapsed)}</div>
+                      <div style={{fontSize:'9px',color:'var(--green)',opacity:0.7}}>ÉCOULÉ {isRF2Active && <span style={{color:'var(--cyan)',fontWeight:'700'}}>🔴 rF2</span>}</div>
+                      {isTrainingMode && <div style={{fontSize:'8px',color:'var(--orange)',fontWeight:'700',marginTop:'2px'}}>🏋️ TRAINING</div>}
+                      {isRaceMode && <div style={{fontSize:'8px',color:'var(--green)',fontWeight:'700',marginTop:'2px'}}>🏁 COURSE</div>}
+                    </div>
+                    <div style={{color:'var(--text-dim)',fontSize:'18px',fontWeight:'300'}}>/</div>
+                    <div style={{textAlign:'center'}}>
+                      <div className="mono" style={{fontSize:'24px',fontWeight:'800',color:'var(--red)'}}>{formatDur(Math.max(0, totalSec - effectiveElapsed))}</div>
+                      <div style={{fontSize:'9px',color:'var(--red)',opacity:0.7}}>RESTANT</div>
+                    </div>
+                  </div>
+                );
+              })()}
               
               {/* TABS au milieu */}
               <div className="tabs-container" style={{display:'flex',alignItems:'center',gap:'4px',flex:'1',justifyContent:'center'}}>
@@ -11529,6 +11551,7 @@
                 window.AGP_Logger?.info('Chrono sync DIRECT rF2', { elapsed: Math.floor(elapsedSeconds) });
               }
             }}
+            onRF2Elapsed={setRF2SessionElapsed}
             onApplyReferences={(newPilotComboTimes, newPilotComboCons) => {
               // v32.5: Appliquer les références de temps aux paramètres de l'équipe active
               setTeams(prev => prev.map((t, idx) => {
@@ -12300,7 +12323,7 @@
 
 
           {/* STATS */}
-          {mainTab === 'stats' && <StatsView teams={teams} elapsed={chronoState.elapsed} currentTeamName={auth.teamName} />}
+          {mainTab === 'stats' && <StatsView teams={teams} elapsed={rf2SessionElapsed !== null && rf2SessionElapsed > 0 ? rf2SessionElapsed : chronoState.elapsed} currentTeamName={auth.teamName} />}
 
           {/* PERSO */}
           {mainTab === 'perso' && <PersonalView team={team} pilots={team.pilots} stints={team.stints} auth={auth} chronoState={chronoState} onGenerate={handleGenerate} onRecalc={handleRecalc} onSave={() => updateTeam({ originalStints: JSON.parse(JSON.stringify(team.stints)) })} canEdit={canEdit} settings={team.settings} isCreator={isCreator} onUpdatePilot={(pilotId, changes) => { const newPilots = team.pilots.map(p => p.id === pilotId ? {...p, ...changes} : p); updateTeam({ pilots: newPilots }); }} onUpdateSettings={(newSettings) => updateTeam({ settings: newSettings })} />}
