@@ -3301,12 +3301,13 @@
       },
       
       // Enregistrer un tour
-      recordLap(lapTime, fuelUsed, isValid = true) {
+      recordLap(lapTime, fuelUsed, isValid = true, tireWear = null) {
         if (!this.activeSession.isRecording) return null;
         
         const lap = {
           time: lapTime,
           fuel: fuelUsed,
+          tireWear: tireWear, // v33.19: usure pneus { fl, fr, rl, rr, avg }
           timestamp: Date.now(),
           isValid,
           isOutlier: false
@@ -3343,6 +3344,12 @@
         const avgFuel = validLaps.reduce((a, b) => a + b.fuel, 0) / validLaps.length;
         const bestTime = Math.min(...validLaps.map(l => l.time));
         
+        // v33.19: Calculer usure pneus moyenne par tour
+        const lapsWithWear = validLaps.filter(l => l.tireWear && l.tireWear.avg > 0);
+        const avgTireWear = lapsWithWear.length > 0 
+          ? lapsWithWear.reduce((a, b) => a + b.tireWear.avg, 0) / lapsWithWear.length 
+          : 0;
+        
         // Créer la référence
         const comboKey = `${session.combo.tire}_${session.combo.mix}`;
         const pilotKey = `${session.pilotId}_${comboKey}`;
@@ -3355,6 +3362,7 @@
           avgLapTime: avgTime,
           bestLapTime: bestTime,
           avgFuelCons: avgFuel,
+          avgTireWear: avgTireWear, // v33.19: usure pneus moyenne par tour (%)
           totalLaps: session.laps.length,
           validLaps: validLaps.length,
           recordedAt: Date.now(),
@@ -3374,7 +3382,8 @@
           pilot: session.pilotName, 
           combo: comboKey, 
           time: this.formatTime(avgTime), 
-          conso: avgFuel.toFixed(2) 
+          conso: avgFuel.toFixed(2),
+          tireWear: avgTireWear.toFixed(2) + '%/tour'
         });
         
         this.activeSession.isRecording = false;
@@ -3401,6 +3410,7 @@
       exportToSettings(settings) {
         const pilotComboTimes = { ...settings.pilotComboTimes };
         const pilotComboCons = { ...settings.pilotComboCons };
+        const pilotComboWear = { ...settings.pilotComboWear };
         
         Object.entries(this.references).forEach(([pilotId, combos]) => {
           Object.entries(combos).forEach(([comboKey, ref]) => {
@@ -3408,13 +3418,15 @@
             // Format mm:ss.ms
             pilotComboTimes[key] = this.formatTime(ref.avgLapTime);
             pilotComboCons[key] = ref.avgFuelCons.toFixed(2);
+            pilotComboWear[key] = (ref.avgTireWear || 0).toFixed(2);
           });
         });
         
         return {
           ...settings,
           pilotComboTimes,
-          pilotComboCons
+          pilotComboCons,
+          pilotComboWear
         };
       },
       
@@ -5198,7 +5210,7 @@
       return { id: uid(), name: n, position: POSITIONS[i], color: defaults.color || COLORS[i], badgeGlow: 0, badgeEmoji: defaults.badge || '', rowOpacity: 2, lapTime: '1:48.500', active: true, avgLapTime: null, totalStintTime: 0 };
     });
     
-    const createSettings = () => ({ durationHours: 24, tankCapacity: 70, tanksPerStint: 1, pitStopSec: 45, tireChangeSec: 25, driverChangeSec: 30, pitLaneTime: 30, defaultTireChange: true, tireChangeEvery: 1, defaultMixture: 'race', tireType: 'medium', tireWearLimit: 30, activeCombos: ['medium_race'], comboTimes: { 'soft_lean': '1:48.000', 'soft_race': '1:47.500', 'soft_qualif': '1:47.000', 'medium_lean': '1:49.000', 'medium_race': '1:48.500', 'medium_qualif': '1:48.000', 'hard_lean': '1:50.500', 'hard_race': '1:50.000', 'hard_qualif': '1:49.500', 'wet_lean': '2:01.000', 'wet_race': '2:00.000', 'wet_qualif': '1:59.000' }, comboCons: { 'soft_lean': '2.85', 'soft_race': '3.15', 'soft_qualif': '3.45', 'medium_lean': '2.80', 'medium_race': '3.10', 'medium_qualif': '3.41', 'hard_lean': '2.75', 'hard_race': '3.05', 'hard_qualif': '3.35', 'wet_lean': '2.90', 'wet_race': '3.20', 'wet_qualif': '3.50' }, pilotComboTimes: {}, pilotComboCons: {}, raceStartTime: '14:00', validated: false, originalSettings: null });
+    const createSettings = () => ({ durationHours: 24, tankCapacity: 70, tanksPerStint: 1, pitStopSec: 45, tireChangeSec: 25, driverChangeSec: 30, pitLaneTime: 30, defaultTireChange: true, tireChangeEvery: 1, defaultMixture: 'race', tireType: 'medium', tireWearLimit: 30, activeCombos: ['medium_race'], comboTimes: { 'soft_lean': '1:48.000', 'soft_race': '1:47.500', 'soft_qualif': '1:47.000', 'medium_lean': '1:49.000', 'medium_race': '1:48.500', 'medium_qualif': '1:48.000', 'hard_lean': '1:50.500', 'hard_race': '1:50.000', 'hard_qualif': '1:49.500', 'wet_lean': '2:01.000', 'wet_race': '2:00.000', 'wet_qualif': '1:59.000' }, comboCons: { 'soft_lean': '2.85', 'soft_race': '3.15', 'soft_qualif': '3.45', 'medium_lean': '2.80', 'medium_race': '3.10', 'medium_qualif': '3.41', 'hard_lean': '2.75', 'hard_race': '3.05', 'hard_qualif': '3.35', 'wet_lean': '2.90', 'wet_race': '3.20', 'wet_qualif': '3.50' }, pilotComboTimes: {}, pilotComboCons: {}, pilotComboWear: {}, raceStartTime: '14:00', validated: false, originalSettings: null });
     
     // Calcul moyenne pondérée des temps pilotes pour un combo
     const calcWeightedAvgTime = (pilots, comboKey, pilotComboTimes, fallbackTime) => {
@@ -6593,6 +6605,13 @@
       const [selectedTeam, setSelectedTeam] = useState(teamCarNumber);
       const [telemetryData, setTelemetryData] = useState({});
       
+      // ═══ v33.19: BEST SECTEURS GLOBAUX (tous véhicules) ═══
+      const [globalBestSectors, setGlobalBestSectors] = useState({
+        s1: { time: null, driver: null, carNumber: null },
+        s2: { time: null, driver: null, carNumber: null },
+        s3: { time: null, driver: null, carNumber: null }
+      });
+      
       // ═══ v32.3 FIX: Synchroniser selectedTeam avec le numéro de voiture de l'équipe ═══
       useEffect(() => {
         if (teamCarNumber && teamCarNumber !== selectedTeam) {
@@ -6604,7 +6623,6 @@
       const [simhubConnected, setSimhubConnected] = useState(false);
       const [lastSimhubUpdate, setLastSimhubUpdate] = useState(null);
       const [heure, setHeure] = useState(new Date());
-      const [showImportModal, setShowImportModal] = useState(false);
       const [raceSessionTime, setRaceSessionTime] = useState(null);
       
       // ═══ TRACKING PIT IN/OUT POUR AUTO-REMPLISSAGE ═══
@@ -6875,9 +6893,19 @@
         const lastLapTime = teamData.lastLapTimeSec || parseFloat(teamData.lastLapTime) || 0;
         const fuelUsed = teamData.fuelUsedLastLap || 3.0;
         
+        // v33.19: Capturer usure pneus actuelle
+        const tires = teamData.tires || {};
+        const tireWear = {
+          fl: tires.fl?.wear || 0,
+          fr: tires.fr?.wear || 0,
+          rl: tires.rl?.wear || 0,
+          rr: tires.rr?.wear || 0,
+          avg: ((tires.fl?.wear || 0) + (tires.fr?.wear || 0) + (tires.rl?.wear || 0) + (tires.rr?.wear || 0)) / 4
+        };
+        
         // Enregistrer si on a un temps valide
         if (lastLapTime > 60 && lastLapTime < 300) {
-          const lap = window.AGP_ReferenceCollector.recordLap(lastLapTime, fuelUsed, true);
+          const lap = window.AGP_ReferenceCollector.recordLap(lastLapTime, fuelUsed, true, tireWear);
           if (lap) {
             setLastRecordedLap(currentLap);
             
@@ -6886,11 +6914,14 @@
             const validLaps = session.laps.filter(l => l.isValid && !l.isOutlier);
             const avgT = validLaps.length > 0 ? validLaps.reduce((a, b) => a + b.time, 0) / validLaps.length : lastLapTime;
             const avgF = validLaps.length > 0 ? validLaps.reduce((a, b) => a + b.fuel, 0) / validLaps.length : fuelUsed;
+            const lapsWithWear = validLaps.filter(l => l.tireWear && l.tireWear.avg > 0);
+            const avgW = lapsWithWear.length > 0 ? lapsWithWear.reduce((a, b) => a + b.tireWear.avg, 0) / lapsWithWear.length : 0;
             
             setRecordingStats({
               laps: session.laps.length,
               avgTime: avgT,
-              avgFuel: avgF
+              avgFuel: avgF,
+              avgWear: avgW
             });
             
             // Notification visuelle
@@ -6899,7 +6930,7 @@
               return [...filtered, {
                 type: 'LAP_RECORDED',
                 priority: 'INFO',
-                message: `📊 Tour ${session.laps.length} enregistré: ${Math.floor(lastLapTime/60)}:${(lastLapTime%60).toFixed(1).padStart(4,'0')} | Moy: ${Math.floor(avgT/60)}:${(avgT%60).toFixed(1).padStart(4,'0')} | ⛽${avgF.toFixed(2)}L`,
+                message: `📊 Tour ${session.laps.length}: ${Math.floor(lastLapTime/60)}:${(lastLapTime%60).toFixed(1).padStart(4,'0')} | ⛽${avgF.toFixed(2)}L | 🛞${avgW.toFixed(1)}%`,
                 timestamp: Date.now(),
                 autoHide: true
               }];
@@ -6927,10 +6958,11 @@
           const ref = window.AGP_ReferenceCollector.endSession();
           
           // ═══ CONFIRMATION IMPORT v31 - Le pilote valide ou non ═══
-          // ref retourne: pilotId, pilotName, combo, comboKey, avgLapTime, bestLapTime, avgFuelCons, totalLaps, validLaps
+          // ref retourne: pilotId, pilotName, combo, comboKey, avgLapTime, bestLapTime, avgFuelCons, avgTireWear, totalLaps, validLaps
           if (ref && ref.avgLapTime > 0 && ref.validLaps >= 3) {
             const timeStr = Math.floor(ref.avgLapTime / 60) + ':' + (ref.avgLapTime % 60).toFixed(3).padStart(6, '0');
             const consStr = ref.avgFuelCons.toFixed(2);
+            const wearStr = (ref.avgTireWear || 0).toFixed(2);
             
             // Stocker les données en attente de validation
             setPendingImport({
@@ -6939,9 +6971,11 @@
               combo: ref.comboKey,
               avgLapTime: ref.avgLapTime,
               avgFuelCons: ref.avgFuelCons,
+              avgTireWear: ref.avgTireWear || 0,
               lapsCount: ref.validLaps,
               timeStr: timeStr,
               consStr: consStr,
+              wearStr: wearStr,
               bestLap: ref.bestLapTime
             });
             
@@ -8082,7 +8116,9 @@
                   tempMax: r.brakes?.tempMax ?? 0,
                   tempMin: r.brakes?.tempMin ?? 0,
                   tempFL: r.brakes?.tempFL ?? 0,
-                  tempFR: r.brakes?.tempFR ?? 0
+                  tempFR: r.brakes?.tempFR ?? 0,
+                  tempRL: r.brakes?.tempRL ?? 0,
+                  tempRR: r.brakes?.tempRR ?? 0
                 },
                 
                 // ═══ DÉGÂTS AGRÉGÉS ═══
@@ -8125,6 +8161,35 @@
             
             setTelemetryData(data);
             setIsConnected(true);
+            
+            // ═══ v33.19: CALCUL BEST SECTEURS GLOBAUX ═══
+            setGlobalBestSectors(prev => {
+              const newBests = { ...prev };
+              Object.entries(data).forEach(([carNum, carData]) => {
+                if (!carData) return;
+                const driverName = carData.driverName || carData.nom || `#${carNum}`;
+                
+                // Best S1
+                if (carData.bestSector1 > 0) {
+                  if (!newBests.s1.time || carData.bestSector1 < newBests.s1.time) {
+                    newBests.s1 = { time: carData.bestSector1, driver: driverName, carNumber: carNum };
+                  }
+                }
+                // Best S2
+                if (carData.bestSector2 > 0) {
+                  if (!newBests.s2.time || carData.bestSector2 < newBests.s2.time) {
+                    newBests.s2 = { time: carData.bestSector2, driver: driverName, carNumber: carNum };
+                  }
+                }
+                // Best S3
+                if (carData.bestSector3 > 0) {
+                  if (!newBests.s3.time || carData.bestSector3 < newBests.s3.time) {
+                    newBests.s3 = { time: carData.bestSector3, driver: driverName, carNumber: carNum };
+                  }
+                }
+              });
+              return newBests;
+            });
             
             // ═══ v33.3: DÉTECTION AUTOMATIQUE PILOTE ACTIF ═══
             // Appeler DriverMatchingSystem pour matcher les pilotes SimHub avec l'équipage
@@ -8697,30 +8762,12 @@
             // v32.9: Pas de log si météo absente (bruit inutile)
             
             // ═══ v33.7: MISE À JOUR DÉGÂTS VÉHICULE (format amélioré) ═══
-            // Chercher soit un objet damage, soit des champs individuels
+            // FIX v33.19: Chercher l'objet damage correctement
             const carWithDamage = Object.values(rawData).find(car => 
-              car && (car.damage || car.damageAero !== undefined || car.dmgAero !== undefined)
+              car && car.damage && typeof car.damage === 'object'
             );
-            if (carWithDamage) {
-              let dmg;
-              if (carWithDamage.damage) {
-                // Format objet damage
-                dmg = carWithDamage.damage;
-              } else {
-                // Format champs individuels (damageAero, damageEngine, etc.)
-                dmg = {
-                  front: carWithDamage.damageFront || carWithDamage.dmgFront || carWithDamage.frontDamage || 0,
-                  rear: carWithDamage.damageRear || carWithDamage.dmgRear || carWithDamage.rearDamage || 0,
-                  left: carWithDamage.damageLeft || carWithDamage.dmgLeft || carWithDamage.leftDamage || 0,
-                  right: carWithDamage.damageRight || carWithDamage.dmgRight || carWithDamage.rightDamage || 0,
-                  aero: carWithDamage.damageAero || carWithDamage.dmgAero || carWithDamage.aeroDamage || 0,
-                  engine: carWithDamage.damageEngine || carWithDamage.dmgEngine || carWithDamage.engineDamage || 0,
-                  suspension: carWithDamage.damageSuspension || carWithDamage.dmgSuspension || carWithDamage.suspensionDamage || 0,
-                };
-                // Calculer total
-                dmg.total = Math.max(dmg.front, dmg.rear, dmg.left, dmg.right, dmg.aero, dmg.engine, dmg.suspension);
-                dmg.hasDamage = dmg.total > 5;
-              }
+            if (carWithDamage && carWithDamage.damage) {
+              const dmg = carWithDamage.damage;
               
               setVehicleDamage({
                 front: dmg.front || 0,
@@ -8932,13 +8979,7 @@
       const handleSyncChrono = () => { if (raceSessionTime !== null && onSyncChrono) onSyncChrono(raceSessionTime); };
       
       // Import données
-      const handleImport = (carNum) => {
-        const data = collectedData?.[carNum];
-        if (data && onImportData) {
-          onImportData({ carNumber: carNum, avgLapTime: data.avgLapTimeStr, avgFuelCons: data.avgFuelCons.toFixed(2), bestLapTime: data.bestLapStr, totalLaps: data.totalLaps });
-          setShowImportModal(false);
-        }
-      };
+      // v33.19: handleImport retiré - utiliser PRÉ-COURSE à la place
       
       // Météo icon
       const getMeteoIcon = () => { if (meteo.condition === 'rain') return '🌧️'; if (meteo.condition === 'cloudy') return '☁️'; return '☀️'; };
@@ -9085,7 +9126,6 @@
                 {raceSessionTime !== null && onSyncChrono && (
                   <button onClick={handleSyncChrono} style={{ padding: '6px 12px', borderRadius: '6px', border: '1px solid var(--cyan)', background: 'rgba(0,255,255,0.1)', color: 'var(--cyan)', fontSize: '10px', cursor: 'pointer', fontWeight: '600' }}>🔄 Sync</button>
                 )}
-                <button onClick={() => setShowImportModal(true)} style={{ padding: '6px 12px', borderRadius: '6px', border: '1px solid var(--orange)', background: 'rgba(255,136,0,0.15)', color: 'var(--orange)', fontSize: '10px', cursor: 'pointer', fontWeight: '600' }}>📊 Import</button>
                 <button onClick={() => setShowRefPanel(true)} style={{ padding: '6px 14px', borderRadius: '6px', border: '2px solid var(--cyan)', background: isRecordingRef ? 'var(--red)' : 'linear-gradient(135deg, rgba(0,255,255,0.2), rgba(88,166,255,0.2))', color: isRecordingRef ? '#fff' : 'var(--cyan)', fontSize: '10px', cursor: 'pointer', fontWeight: '700', animation: isRecordingRef ? 'pulse 1s infinite' : 'none' }}>
                   {isRecordingRef ? '🔴 REC' : '🎯 PRÉ-COURSE'}
                 </button>
@@ -9422,9 +9462,13 @@
                             <span style={{color:'var(--text-muted)'}}>Meilleur tour:</span>
                             <span className="mono" style={{fontSize:'14px',color:'var(--purple)'}}>{Math.floor(pendingImport.bestLap / 60)}:{(pendingImport.bestLap % 60).toFixed(3).padStart(6, '0')}</span>
                           </div>
-                          <div style={{display:'flex',justifyContent:'space-between'}}>
+                          <div style={{display:'flex',justifyContent:'space-between',marginBottom:'6px'}}>
                             <span style={{color:'var(--text-muted)'}}>Conso moyenne:</span>
                             <span className="mono" style={{fontSize:'18px',fontWeight:'800',color:'var(--red)'}}>{pendingImport.consStr} L</span>
+                          </div>
+                          <div style={{display:'flex',justifyContent:'space-between'}}>
+                            <span style={{color:'var(--text-muted)'}}>Usure pneus/tour:</span>
+                            <span className="mono" style={{fontSize:'18px',fontWeight:'800',color:'var(--orange)'}}>{pendingImport.wearStr} %</span>
                           </div>
                         </div>
                       </div>
@@ -9611,216 +9655,341 @@
               ) : (
                 <div style={{display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px'}}>
                   
-                  {/* COL 1: ÉQUIPE - Layout professionnel v33.19 */}
-                  <div style={{display: 'flex', flexDirection: 'column', gap: '6px'}}>
+                  {/* COL 1: ÉQUIPE - Dashboard Ultra-Compact v33.19 */}
+                  <div style={{display: 'flex', flexDirection: 'column', gap: '4px'}}>
                     
-                    {/* ═══ HEADER ÉQUIPE COMPACT ═══ */}
-                    <div className="card" style={{padding: '10px', borderLeft: '4px solid ' + equipe.couleur, background: 'linear-gradient(135deg, var(--bg-card) 0%, rgba(0,0,0,0.3) 100%)'}}>
-                      <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
-                        <div style={{display: 'flex', alignItems: 'center', gap: '12px'}}>
-                          <div style={{fontSize: '32px', fontWeight: '800', color: equipe.couleur}}>#{selectedTeam}</div>
-                          <div>
-                            <div style={{fontSize: '14px', fontWeight: '700'}}>{equipe.nom}</div>
-                            <div style={{fontSize: '11px', color: 'var(--cyan)'}}>👤 {currentTeam.nom}</div>
-                          </div>
+                    {/* ═══ HEADER PRINCIPAL - Toujours visible ═══ */}
+                    <div style={{
+                      padding: '10px 12px',
+                      background: 'linear-gradient(135deg, ' + equipe.couleur + '22 0%, var(--bg-card) 100%)',
+                      borderRadius: '8px',
+                      borderLeft: '5px solid ' + equipe.couleur,
+                      display: 'grid',
+                      gridTemplateColumns: '1fr auto',
+                      gap: '10px',
+                      alignItems: 'center'
+                    }}>
+                      {/* Gauche: Équipe + Pilote */}
+                      <div>
+                        <div style={{display: 'flex', alignItems: 'baseline', gap: '8px'}}>
+                          <span style={{fontSize: '28px', fontWeight: '900', color: equipe.couleur}}>#{selectedTeam}</span>
+                          <span style={{fontSize: '14px', fontWeight: '700', color: 'var(--text)'}}>{equipe.nom}</span>
                         </div>
-                        <div style={{textAlign: 'right', padding: '8px 12px', background: 'var(--bg-input)', borderRadius: '8px'}}>
-                          <div style={{fontSize: '28px', fontWeight: '800', color: currentTeam.position <= 3 ? '#ffd700' : 'var(--text)'}}>P{currentTeam.position}</div>
-                          <div style={{fontSize: '9px', color: 'var(--text-muted)'}}>Tour {currentTeam.tour} • {currentTeam.vitesse} km/h</div>
+                        <div style={{fontSize: '11px', color: 'var(--cyan)', marginTop: '2px'}}>
+                          👤 {currentTeam.nom} {currentTeam.isInPit && <span style={{color: 'var(--orange)', fontWeight: '700', animation: 'pulse 1s infinite'}}>• 🔧 PIT</span>}
                         </div>
                       </div>
-                      {currentTeam.isInPit && <div style={{marginTop:'8px', padding:'6px', background:'rgba(255,136,0,0.2)', borderRadius:'4px', textAlign:'center', color:'var(--orange)', fontWeight:'700', fontSize:'11px', animation:'pulse 1s infinite'}}>🔧 AUX STANDS</div>}
-                    </div>
-                    
-                    {/* ═══ MÉTRIQUES CLÉS - Grid 2x3 ═══ */}
-                    <div className="card" style={{padding: '10px'}}>
-                      <div style={{display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px'}}>
-                        {/* Dernier Tour */}
-                        <div style={{padding: '8px', background: 'var(--bg-input)', borderRadius: '6px', textAlign: 'center', borderTop: '2px solid var(--cyan)'}}>
-                          <div style={{fontSize: '8px', color: 'var(--text-muted)', marginBottom: '2px'}}>DERNIER</div>
-                          <div style={{fontSize: '15px', fontWeight: '700', fontFamily: 'JetBrains Mono'}}>{currentTeam.dernierTour}</div>
-                        </div>
-                        {/* Meilleur Tour */}
-                        <div style={{padding: '8px', background: 'var(--bg-input)', borderRadius: '6px', textAlign: 'center', borderTop: '2px solid var(--green)'}}>
-                          <div style={{fontSize: '8px', color: 'var(--text-muted)', marginBottom: '2px'}}>MEILLEUR</div>
-                          <div style={{fontSize: '15px', fontWeight: '700', fontFamily: 'JetBrains Mono', color: 'var(--green)'}}>{currentTeam.meilleurTour}</div>
-                        </div>
-                        {/* Écart Leader */}
-                        <div style={{padding: '8px', background: 'var(--bg-input)', borderRadius: '6px', textAlign: 'center', borderTop: '2px solid var(--orange)'}}>
-                          <div style={{fontSize: '8px', color: 'var(--text-muted)', marginBottom: '2px'}}>VS LEADER</div>
-                          <div style={{fontSize: '15px', fontWeight: '700', fontFamily: 'JetBrains Mono', color: currentTeam.position === 1 ? 'var(--gold)' : 'var(--orange)'}}>
-                            {currentTeam.position === 1 ? 'LEADER' : '+' + (telemetryData[selectedTeam]?.gapLeader || 0).toFixed(1) + 's'}
+                      
+                      {/* Droite: Position + Tour + Vitesse */}
+                      <div style={{
+                        display: 'flex', gap: '8px', alignItems: 'center',
+                        padding: '6px 10px',
+                        background: currentTeam.position <= 3 ? 'rgba(255,215,0,0.15)' : 'var(--bg-input)',
+                        borderRadius: '6px',
+                        border: currentTeam.position <= 3 ? '1px solid #ffd700' : '1px solid var(--border)'
+                      }}>
+                        <div style={{textAlign: 'center'}}>
+                          <div style={{fontSize: '26px', fontWeight: '900', color: currentTeam.position === 1 ? '#ffd700' : currentTeam.position <= 3 ? '#c0c0c0' : 'var(--text)', lineHeight: 1}}>
+                            P{currentTeam.position}
                           </div>
                         </div>
+                        <div style={{borderLeft: '1px solid var(--border)', paddingLeft: '8px'}}>
+                          <div style={{fontSize: '11px', fontWeight: '700'}}>T{currentTeam.tour}</div>
+                          <div style={{fontSize: '10px', color: 'var(--cyan)', fontFamily: 'JetBrains Mono'}}>{currentTeam.vitesse} km/h</div>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    {/* ═══ SECTION 1: TEMPS ═══ */}
+                    <details open style={{background: 'var(--bg-card)', borderRadius: '6px', overflow: 'hidden'}}>
+                      <summary style={{
+                        padding: '6px 10px', cursor: 'pointer', 
+                        background: 'var(--bg-header)', 
+                        fontSize: '10px', fontWeight: '700', color: 'var(--cyan)',
+                        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                        userSelect: 'none'
+                      }}>
+                        <span>⏱️ TEMPS AU TOUR</span>
+                        <span style={{fontSize: '9px', color: 'var(--text-muted)'}}>▼</span>
+                      </summary>
+                      <div style={{padding: '8px', display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '4px'}}>
+                        {/* Dernier */}
+                        <div style={{padding: '6px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center', borderTop: '3px solid var(--cyan)'}}>
+                          <div style={{fontSize: '7px', color: 'var(--text-muted)', letterSpacing: '0.5px'}}>DERNIER</div>
+                          <div style={{fontSize: '14px', fontWeight: '800', fontFamily: 'JetBrains Mono', color: 'var(--text)'}}>{currentTeam.dernierTour}</div>
+                        </div>
+                        {/* Meilleur */}
+                        <div style={{padding: '6px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center', borderTop: '3px solid var(--green)'}}>
+                          <div style={{fontSize: '7px', color: 'var(--text-muted)', letterSpacing: '0.5px'}}>MEILLEUR</div>
+                          <div style={{fontSize: '14px', fontWeight: '800', fontFamily: 'JetBrains Mono', color: 'var(--green)'}}>{currentTeam.meilleurTour}</div>
+                        </div>
+                        {/* Estimé */}
+                        <div style={{padding: '6px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center', borderTop: '3px solid var(--purple)'}}>
+                          <div style={{fontSize: '7px', color: 'var(--text-muted)', letterSpacing: '0.5px'}}>ESTIMÉ</div>
+                          <div style={{fontSize: '14px', fontWeight: '800', fontFamily: 'JetBrains Mono', color: 'var(--purple)'}}>
+                            {(() => {
+                              const timing = currentTeam?.timing || {};
+                              if (timing.estimatedLapTime > 0) {
+                                const mins = Math.floor(timing.estimatedLapTime / 60);
+                                const secs = (timing.estimatedLapTime % 60).toFixed(3);
+                                return `${mins}:${secs.padStart(6, '0')}`;
+                              }
+                              return '--:--.---';
+                            })()}
+                          </div>
+                        </div>
+                      </div>
+                    </details>
+                    
+                    {/* ═══ SECTION 2: ÉCARTS ═══ */}
+                    <details open style={{background: 'var(--bg-card)', borderRadius: '6px', overflow: 'hidden'}}>
+                      <summary style={{
+                        padding: '6px 10px', cursor: 'pointer', 
+                        background: 'var(--bg-header)', 
+                        fontSize: '10px', fontWeight: '700', color: 'var(--orange)',
+                        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                        userSelect: 'none'
+                      }}>
+                        <span>📏 ÉCARTS</span>
+                        <span style={{fontSize: '9px', color: 'var(--text-muted)'}}>▼</span>
+                      </summary>
+                      <div style={{padding: '8px', display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: '6px', alignItems: 'center'}}>
                         {/* Devant */}
-                        <div style={{padding: '8px', background: 'var(--bg-input)', borderRadius: '6px', textAlign: 'center'}}>
-                          <div style={{fontSize: '8px', color: 'var(--text-muted)', marginBottom: '2px'}}>↑ DEVANT</div>
-                          <div style={{fontSize: '14px', fontWeight: '700', fontFamily: 'JetBrains Mono', color: 'var(--orange)'}}>
+                        <div style={{padding: '8px', background: 'rgba(255,136,0,0.1)', borderRadius: '4px', textAlign: 'center', border: '1px solid var(--orange)'}}>
+                          <div style={{fontSize: '7px', color: 'var(--orange)', fontWeight: '600'}}>↑ DEVANT</div>
+                          <div style={{fontSize: '16px', fontWeight: '900', fontFamily: 'JetBrains Mono', color: 'var(--orange)'}}>
                             {telemetryData[selectedTeam]?.gapAhead ? '-' + telemetryData[selectedTeam].gapAhead.toFixed(1) + 's' : '--'}
                           </div>
-                          <div style={{fontSize: '7px', color: 'var(--text-dim)'}}>#{telemetryData[selectedTeam]?.carAhead || '-'}</div>
+                          <div style={{fontSize: '8px', color: 'var(--text-dim)'}}>#{telemetryData[selectedTeam]?.carAhead || '-'}</div>
                         </div>
+                        
+                        {/* Séparateur visuel - Position actuelle */}
+                        <div style={{textAlign: 'center', padding: '4px'}}>
+                          <div style={{fontSize: '18px', fontWeight: '900', color: 'var(--text)'}}>P{currentTeam.position}</div>
+                          <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>VOUS</div>
+                        </div>
+                        
                         {/* Derrière */}
-                        <div style={{padding: '8px', background: 'var(--bg-input)', borderRadius: '6px', textAlign: 'center'}}>
-                          <div style={{fontSize: '8px', color: 'var(--text-muted)', marginBottom: '2px'}}>↓ DERRIÈRE</div>
-                          <div style={{fontSize: '14px', fontWeight: '700', fontFamily: 'JetBrains Mono', color: 'var(--green)'}}>
+                        <div style={{padding: '8px', background: 'rgba(63,185,80,0.1)', borderRadius: '4px', textAlign: 'center', border: '1px solid var(--green)'}}>
+                          <div style={{fontSize: '7px', color: 'var(--green)', fontWeight: '600'}}>↓ DERRIÈRE</div>
+                          <div style={{fontSize: '16px', fontWeight: '900', fontFamily: 'JetBrains Mono', color: 'var(--green)'}}>
                             {telemetryData[selectedTeam]?.gapBehind ? '+' + telemetryData[selectedTeam].gapBehind.toFixed(1) + 's' : '--'}
                           </div>
-                          <div style={{fontSize: '7px', color: 'var(--text-dim)'}}>#{telemetryData[selectedTeam]?.carBehind || '-'}</div>
-                        </div>
-                        {/* Secteurs */}
-                        <div style={{padding: '8px', background: 'var(--bg-input)', borderRadius: '6px', textAlign: 'center'}}>
-                          <div style={{fontSize: '8px', color: 'var(--text-muted)', marginBottom: '2px'}}>SECTEURS</div>
-                          <div style={{display: 'flex', gap: '2px', justifyContent: 'center'}}>
-                            <span style={{fontSize: '9px', color: 'var(--green)', fontFamily: 'JetBrains Mono'}}>{(telemetryData[selectedTeam]?.bestSector1 || 0).toFixed(1)}</span>
-                            <span style={{fontSize: '9px', color: 'var(--purple)', fontFamily: 'JetBrains Mono'}}>{(telemetryData[selectedTeam]?.bestSector2 || 0).toFixed(1)}</span>
-                            <span style={{fontSize: '9px', color: 'var(--orange)', fontFamily: 'JetBrains Mono'}}>{(telemetryData[selectedTeam]?.bestSector3 || 0).toFixed(1)}</span>
-                          </div>
+                          <div style={{fontSize: '8px', color: 'var(--text-dim)'}}>#{telemetryData[selectedTeam]?.carBehind || '-'}</div>
                         </div>
                       </div>
-                    </div>
+                    </details>
                     
-                    {/* ═══ CHRONOLOGIE IMPORTANTE ═══ */}
-                    <div className="card" style={{padding: '10px', flex: 1}}>
-                      <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px'}}>
-                        <span style={{fontWeight: '700', fontSize: '11px', color: 'var(--text-muted)'}}>📜 CHRONOLOGIE</span>
-                        <span style={{fontSize: '8px', color: 'var(--green)'}}>● LIVE</span>
-                      </div>
-                      
-                      <div style={{maxHeight: '200px', overflowY: 'auto'}}>
-                        {(() => {
-                          // Construire chronologie équipe
-                          const teamEvents = [];
-                          const telem = telemetryData[selectedTeam] || {};
-                          const collected = currentTeam.collected || {};
-                          
-                          // Événement: Meilleur tour
-                          if (collected.bestLapStr && collected.bestLapStr !== '--:--.---') {
-                            teamEvents.push({ time: 'Session', icon: '🏆', msg: `Meilleur: ${collected.bestLapStr}`, type: 'best' });
-                          }
-                          
-                          // Événement: Dernier tour
-                          if (currentTeam.dernierTour && currentTeam.dernierTour !== '--:--.---') {
-                            teamEvents.push({ time: `T${currentTeam.tour}`, icon: '⏱️', msg: `Dernier: ${currentTeam.dernierTour}`, type: 'lap' });
-                          }
-                          
-                          // Événement: Position changée (simulé)
-                          if (currentTeam.position <= 3) {
-                            teamEvents.push({ time: 'Actuel', icon: '🥇', msg: `Podium P${currentTeam.position}`, type: 'position' });
-                          }
-                          
-                          // Événement: Aux stands
-                          if (currentTeam.isInPit) {
-                            teamEvents.push({ time: 'NOW', icon: '🔧', msg: 'Arrêt aux stands', type: 'pit' });
-                          }
-                          
-                          // Événement: Stats collectées
-                          if (collected.totalLaps > 0) {
-                            teamEvents.push({ time: 'Stats', icon: '📊', msg: `${collected.totalLaps} tours • Moy: ${collected.avgLapTimeStr}`, type: 'stats' });
-                          }
-                          
-                          // Événement: Consommation
-                          if (collected.avgFuelCons > 0) {
-                            teamEvents.push({ time: 'Carbu', icon: '⛽', msg: `Conso moy: ${collected.avgFuelCons.toFixed(2)}L/t`, type: 'fuel' });
-                          }
-                          
-                          // Événement: Écart proche critique
-                          const gapAhead = telem.gapAhead;
-                          if (gapAhead && gapAhead < 2) {
-                            teamEvents.push({ time: 'ALERTE', icon: '⚠️', msg: `Voiture devant à ${gapAhead.toFixed(1)}s!`, type: 'alert' });
-                          }
-                          
-                          const gapBehind = telem.gapBehind;
-                          if (gapBehind && gapBehind < 2) {
-                            teamEvents.push({ time: 'ALERTE', icon: '⚠️', msg: `Voiture derrière à ${gapBehind.toFixed(1)}s!`, type: 'alert' });
-                          }
-                          
-                          // Trier par priorité: alertes d'abord, puis pit, puis best, etc.
-                          const priority = { alert: 0, pit: 1, best: 2, position: 3, lap: 4, stats: 5, fuel: 6 };
-                          teamEvents.sort((a, b) => priority[a.type] - priority[b.type]);
-                          
-                          if (teamEvents.length === 0) {
-                            return (
-                              <div style={{textAlign: 'center', padding: '20px', color: 'var(--text-dim)', fontSize: '10px'}}>
-                                En attente de données...
-                              </div>
-                            );
-                          }
-                          
-                          return teamEvents.map((ev, i) => (
+                    {/* ═══ SECTION 3: SECTEURS ═══ */}
+                    <details open style={{background: 'var(--bg-card)', borderRadius: '6px', overflow: 'hidden'}}>
+                      <summary style={{
+                        padding: '6px 10px', cursor: 'pointer', 
+                        background: 'var(--bg-header)', 
+                        fontSize: '10px', fontWeight: '700', color: 'var(--purple)',
+                        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                        userSelect: 'none'
+                      }}>
+                        <span>📍 SECTEURS</span>
+                        <span style={{fontSize: '9px', fontFamily: 'JetBrains Mono', color: 'var(--cyan)'}}>{telemetryData[selectedTeam]?.lastLapTime || '--:--.---'}</span>
+                      </summary>
+                      <div style={{padding: '8px'}}>
+                        {/* En cours */}
+                        <div style={{display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '3px', marginBottom: '6px'}}>
+                          {[
+                            { label: 'S1', value: telemetryData[selectedTeam]?.sector1, color: '#3fb950' },
+                            { label: 'S2', value: telemetryData[selectedTeam]?.sector2, color: '#a371f7' },
+                            { label: 'S3', value: telemetryData[selectedTeam]?.sector3, color: '#ff8800' }
+                          ].map((s, i) => (
                             <div key={i} style={{
-                              display: 'flex', alignItems: 'center', gap: '8px',
-                              padding: '6px 8px', marginBottom: '4px',
-                              background: ev.type === 'alert' ? 'rgba(255,51,68,0.15)' : ev.type === 'best' ? 'rgba(255,215,0,0.1)' : ev.type === 'pit' ? 'rgba(255,136,0,0.15)' : 'var(--bg-input)',
-                              borderRadius: '4px',
-                              borderLeft: ev.type === 'alert' ? '3px solid var(--red)' : ev.type === 'best' ? '3px solid #ffd700' : ev.type === 'pit' ? '3px solid var(--orange)' : '3px solid var(--border)'
+                              padding: '5px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center',
+                              borderLeft: '3px solid ' + s.color
                             }}>
-                              <span style={{fontSize: '8px', color: 'var(--text-dim)', minWidth: '40px', fontFamily: 'JetBrains Mono'}}>{ev.time}</span>
-                              <span style={{fontSize: '12px'}}>{ev.icon}</span>
-                              <span style={{fontSize: '10px', color: ev.type === 'alert' ? 'var(--red)' : ev.type === 'best' ? '#ffd700' : 'var(--text)', flex: 1}}>{ev.msg}</span>
+                              <div style={{fontSize: '7px', color: 'var(--text-muted)'}}>🏁 {s.label}</div>
+                              <div style={{fontSize: '13px', fontWeight: '800', fontFamily: 'JetBrains Mono', color: s.color}}>
+                                {s.value > 0 ? s.value.toFixed(2) : '--'}
+                              </div>
                             </div>
-                          ));
-                        })()}
-                      </div>
-                    </div>
-                    
-                    {/* ═══ PRÉDICTIONS COMPACT ═══ */}
-                    <div className="card" style={{padding: '10px'}}>
-                      <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px'}}>
-                        <span style={{fontWeight: '700', fontSize: '11px', color: 'var(--text-muted)'}}>🔮 PRÉDICTIONS</span>
-                        <div style={{display: 'flex', gap: '2px'}}>
-                          {['equipe', 'pilote', 'relais'].map(mode => (
-                            <button key={mode} onClick={() => setPredictionMode(mode)} style={{
-                              padding: '2px 6px', fontSize: '8px', fontWeight: '600', borderRadius: '3px', border: 'none', cursor: 'pointer',
-                              background: predictionMode === mode ? (mode === 'equipe' ? 'var(--blue)' : mode === 'pilote' ? 'var(--green)' : 'var(--orange)') : 'var(--bg-input)',
-                              color: predictionMode === mode ? '#fff' : 'var(--text-muted)'
-                            }}>{mode.charAt(0).toUpperCase() + mode.slice(1)}</button>
                           ))}
                         </div>
+                        {/* BEST SECTEURS: Équipe + Global */}
+                        <div style={{display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '3px'}}>
+                          {[
+                            { label: 'S1', teamBest: telemetryData[selectedTeam]?.bestSector1, global: globalBestSectors.s1, color: '#3fb950' },
+                            { label: 'S2', teamBest: telemetryData[selectedTeam]?.bestSector2, global: globalBestSectors.s2, color: '#a371f7' },
+                            { label: 'S3', teamBest: telemetryData[selectedTeam]?.bestSector3, global: globalBestSectors.s3, color: '#ff8800' }
+                          ].map((s, i) => {
+                            const isGlobalBest = s.teamBest > 0 && s.global.time && Math.abs(s.teamBest - s.global.time) < 0.001;
+                            return (
+                              <div key={i} style={{
+                                padding: '4px', background: isGlobalBest ? s.color + '25' : s.color + '10', borderRadius: '3px', textAlign: 'center',
+                                border: isGlobalBest ? '1px solid ' + s.color : 'none'
+                              }}>
+                                <div style={{fontSize: '6px', color: s.color, fontWeight: '600'}}>BEST {s.label}</div>
+                                {/* Temps équipe */}
+                                <div style={{fontSize: '11px', fontWeight: '700', fontFamily: 'JetBrains Mono', color: isGlobalBest ? '#ffd700' : s.color}}>
+                                  {s.teamBest > 0 ? s.teamBest.toFixed(3) : '--'}
+                                  {isGlobalBest && ' 👑'}
+                                </div>
+                                {/* Nom pilote équipe */}
+                                <div style={{fontSize: '7px', color: 'var(--text-dim)', marginTop: '1px'}}>
+                                  {s.teamBest > 0 ? (currentTeam.nom?.split(' ')[0] || 'Équipe') : ''}
+                                </div>
+                                {/* Best global si différent */}
+                                {s.global.time && !isGlobalBest && (
+                                  <div style={{marginTop: '2px', paddingTop: '2px', borderTop: '1px dashed ' + s.color + '40', fontSize: '8px'}}>
+                                    <div style={{color: '#ffd700', fontWeight: '700', fontFamily: 'JetBrains Mono'}}>{s.global.time.toFixed(3)} 👑</div>
+                                    <div style={{color: 'var(--text-muted)', fontSize: '6px'}}>#{s.global.carNumber} {s.global.driver?.split(' ')[0] || ''}</div>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
                       </div>
-                      
-                      {(() => {
-                        const raceDurationSec = (raceConfig?.raceDuration || 6) * 3600;
-                        const elapsed = externalChronoState?.elapsed || 0;
-                        const remaining = Math.max(0, raceDurationSec - elapsed);
-                        const consoParTour = currentTeam.carburant?.consoMoy || 3.5;
-                        const capacite = currentTeam.carburant?.capacite || 100;
-                        const avgLapTime = currentTeam.temps?.sec || 108;
-                        
-                        if (predictionMode === 'equipe') {
+                    </details>
+                    
+                    {/* ═══ SECTION 4: FREINS (4 roues) ═══ */}
+                    <details open style={{background: 'var(--bg-card)', borderRadius: '6px', overflow: 'hidden'}}>
+                      <summary style={{
+                        padding: '6px 10px', cursor: 'pointer', 
+                        background: 'var(--bg-header)', 
+                        fontSize: '10px', fontWeight: '700', color: 'var(--red)',
+                        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                        userSelect: 'none'
+                      }}>
+                        <span>🔥 FREINS</span>
+                        <span style={{fontSize: '9px', color: (() => {
+                          const avg = currentTeam?.brakes?.tempAvg || 0;
+                          if (avg < 200) return 'var(--blue)';
+                          if (avg < 400) return 'var(--green)';
+                          if (avg < 600) return 'var(--orange)';
+                          return 'var(--red)';
+                        })()}}>{currentTeam?.brakes?.tempAvg > 0 ? Math.round(currentTeam.brakes.tempAvg) + '°C' : '--'}</span>
+                      </summary>
+                      <div style={{padding: '8px'}}>
+                        {(() => {
+                          const brakes = currentTeam?.brakes || {};
+                          const getBrakeColor = (temp) => {
+                            if (!temp || temp <= 0) return 'var(--text-muted)';
+                            if (temp < 200) return '#58a6ff';
+                            if (temp < 400) return '#3fb950';
+                            if (temp < 600) return '#ff8800';
+                            return '#ff3344';
+                          };
+                          return (
+                            <React.Fragment>
+                              {/* Grille 2x2 vue voiture */}
+                              <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '3px', marginBottom: '6px'}}>
+                                {[
+                                  { label: 'AV-G', value: brakes.tempFL, pos: 'top' },
+                                  { label: 'AV-D', value: brakes.tempFR, pos: 'top' },
+                                  { label: 'AR-G', value: brakes.tempRL, pos: 'bottom' },
+                                  { label: 'AR-D', value: brakes.tempRR, pos: 'bottom' }
+                                ].map((b, i) => (
+                                  <div key={i} style={{
+                                    padding: '5px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center',
+                                    [b.pos === 'top' ? 'borderTop' : 'borderBottom']: '3px solid ' + getBrakeColor(b.value)
+                                  }}>
+                                    <div style={{fontSize: '7px', color: 'var(--text-muted)'}}>{b.label}</div>
+                                    <div style={{fontSize: '14px', fontWeight: '800', fontFamily: 'JetBrains Mono', color: getBrakeColor(b.value)}}>
+                                      {b.value > 0 ? Math.round(b.value) + '°' : '--'}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                              {/* Répartition */}
+                              <div style={{textAlign: 'center', padding: '4px', background: 'rgba(88,166,255,0.1)', borderRadius: '4px', fontSize: '9px'}}>
+                                Répartition: <strong style={{color: brakes.bias > 0 ? 'var(--cyan)' : 'var(--text-muted)'}}>{brakes.bias > 0 ? brakes.bias.toFixed(1) + '%' : '--'}</strong> avant
+                              </div>
+                            </React.Fragment>
+                          );
+                        })()}
+                      </div>
+                    </details>
+                    
+                    {/* ═══ SECTION 5: ÉLECTRONIQUE ═══ */}
+                    <details open style={{background: 'var(--bg-card)', borderRadius: '6px', overflow: 'hidden'}}>
+                      <summary style={{
+                        padding: '6px 10px', cursor: 'pointer', 
+                        background: 'var(--bg-header)', 
+                        fontSize: '10px', fontWeight: '700', color: 'var(--yellow)',
+                        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                        userSelect: 'none'
+                      }}>
+                        <span>⚡ ÉLECTRONIQUE</span>
+                        <span style={{fontSize: '9px', color: 'var(--text-muted)'}}>▼</span>
+                      </summary>
+                      <div style={{padding: '8px', display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '4px'}}>
+                        {(() => {
+                          const elec = currentTeam?.electronics || {};
+                          return (
+                            <React.Fragment>
+                              <div style={{padding: '6px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
+                                <div style={{fontSize: '7px', color: 'var(--text-muted)'}}>ABS</div>
+                                <div style={{fontSize: '14px', fontWeight: '800', color: 'var(--cyan)'}}>{elec.absLevel || '--'}</div>
+                              </div>
+                              <div style={{padding: '6px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
+                                <div style={{fontSize: '7px', color: 'var(--text-muted)'}}>TC</div>
+                                <div style={{fontSize: '14px', fontWeight: '800', color: 'var(--green)'}}>{elec.tcLevel || '--'}</div>
+                              </div>
+                              <div style={{padding: '6px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
+                                <div style={{fontSize: '7px', color: 'var(--text-muted)'}}>MAP</div>
+                                <div style={{fontSize: '14px', fontWeight: '800', color: 'var(--orange)'}}>{elec.engineMap || '--'}</div>
+                              </div>
+                            </React.Fragment>
+                          );
+                        })()}
+                      </div>
+                    </details>
+                    
+                    {/* ═══ SECTION 6: PRÉDICTIONS ═══ */}
+                    <details open style={{background: 'var(--bg-card)', borderRadius: '6px', overflow: 'hidden'}}>
+                      <summary style={{
+                        padding: '6px 10px', cursor: 'pointer', 
+                        background: 'var(--bg-header)', 
+                        fontSize: '10px', fontWeight: '700', color: 'var(--blue)',
+                        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                        userSelect: 'none'
+                      }}>
+                        <span>🔮 PRÉDICTIONS</span>
+                        <span style={{fontSize: '9px', color: 'var(--text-muted)'}}>▼</span>
+                      </summary>
+                      <div style={{padding: '8px'}}>
+                        {(() => {
+                          const raceDurationSec = (raceConfig?.raceDuration || 6) * 3600;
+                          const elapsed = externalChronoState?.elapsed || 0;
+                          const remaining = Math.max(0, raceDurationSec - elapsed);
+                          const consoParTour = currentTeam.carburant?.consoMoy || 3.5;
+                          const capacite = currentTeam.carburant?.capacite || 100;
+                          const avgLapTime = currentTeam.temps?.sec || 108;
                           const toursRestants = avgLapTime > 0 ? Math.floor(remaining / avgLapTime) : 0;
                           const toursTotaux = (currentTeam.tour || 0) + toursRestants;
                           const arretsRestants = Math.ceil(toursRestants / (capacite / consoParTour));
+                          const relaisRestants = Math.ceil(remaining / (150 * 60));
+                          
                           return (
-                            <div style={{display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '4px'}}>
-                              <div style={{padding: '6px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
-                                <div style={{fontSize: '7px', color: 'var(--text-muted)'}}>Tours</div>
-                                <div style={{fontWeight: '700', fontSize: '12px'}}>~{toursTotaux}</div>
+                            <div style={{display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '3px'}}>
+                              <div style={{padding: '5px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
+                                <div style={{fontSize: '7px', color: 'var(--text-muted)'}}>TOURS</div>
+                                <div style={{fontWeight: '800', fontSize: '12px'}}>~{toursTotaux}</div>
                               </div>
-                              <div style={{padding: '6px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
-                                <div style={{fontSize: '7px', color: 'var(--text-muted)'}}>Arrêts</div>
-                                <div style={{fontWeight: '700', fontSize: '12px', color: 'var(--orange)'}}>~{arretsRestants}</div>
+                              <div style={{padding: '5px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
+                                <div style={{fontSize: '7px', color: 'var(--text-muted)'}}>ARRÊTS</div>
+                                <div style={{fontWeight: '800', fontSize: '12px', color: 'var(--orange)'}}>~{arretsRestants}</div>
                               </div>
-                              <div style={{padding: '6px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
-                                <div style={{fontSize: '7px', color: 'var(--text-muted)'}}>Carbu</div>
-                                <div style={{fontWeight: '700', fontSize: '12px', color: 'var(--cyan)'}}>~{Math.round(toursRestants * consoParTour)}L</div>
+                              <div style={{padding: '5px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
+                                <div style={{fontSize: '7px', color: 'var(--text-muted)'}}>CARBU</div>
+                                <div style={{fontWeight: '800', fontSize: '12px', color: 'var(--cyan)'}}>~{Math.round(toursRestants * consoParTour)}L</div>
                               </div>
-                              <div style={{padding: '6px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
-                                <div style={{fontSize: '7px', color: 'var(--text-muted)'}}>Relais</div>
-                                <div style={{fontWeight: '700', fontSize: '12px'}}>~{Math.ceil(remaining / (150 * 60))}</div>
+                              <div style={{padding: '5px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
+                                <div style={{fontSize: '7px', color: 'var(--text-muted)'}}>RELAIS</div>
+                                <div style={{fontWeight: '800', fontSize: '12px'}}>~{relaisRestants}</div>
                               </div>
                             </div>
                           );
-                        }
-                        
-                        // Mode pilote/relais simplifié
-                        return (
-                          <div style={{fontSize: '10px', color: 'var(--text-muted)', textAlign: 'center', padding: '8px'}}>
-                            Mode {predictionMode} - Voir onglet Planning pour détails
-                          </div>
-                        );
-                      })()}
-                    </div>
+                        })()}
+                      </div>
+                    </details>
                   </div>
                   
                   {/* COL 2: Carburant + Pneus */}
@@ -9979,150 +10148,51 @@
                     })()}
                   </div>
                   
-                  {/* COL 3: Pit Strategy + Relais + ALERTES */}
+                  {/* COL 3: Pit Strategy + Relais + Dégâts */}
                   <div style={{display: 'flex', flexDirection: 'column', gap: '6px'}}>
                     
-                    {/* v32.6: PANNEAU DÉGÂTS avec voiture stylisée */}
-                    {/* v33.14: Ajout indicateur si dégâts estimés */}
-                    <div className="card help-tooltip" data-help="DÉGÂTS VÉHICULE - État de chaque zone du véhicule. Vert = intact, Orange = endommagé, Rouge = critique. Si 'EST' affiché = estimés via températures." style={{padding: '12px', background: vehicleDamage.total > 30 ? 'rgba(255,51,68,0.1)' : 'var(--bg-card)', border: vehicleDamage.total > 30 ? '2px solid var(--red)' : '1px solid var(--border)'}}>
-                      <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px'}}>
-                        <span style={{fontWeight: '700', fontSize: '12px', color: vehicleDamage.total > 30 ? 'var(--red)' : 'var(--text-muted)'}}>
+                    {/* ═══ DÉGÂTS VÉHICULE - REPLIABLE ═══ */}
+                    <details open style={{background: vehicleDamage.total > 30 ? 'rgba(255,51,68,0.1)' : 'var(--bg-card)', borderRadius: '6px', border: vehicleDamage.total > 30 ? '2px solid var(--red)' : '1px solid var(--border)', overflow: 'hidden'}}>
+                      <summary style={{padding: '10px 12px', cursor: 'pointer', background: 'var(--bg-header)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', userSelect: 'none'}}>
+                        <span style={{fontWeight: '700', fontSize: '11px', color: vehicleDamage.total > 30 ? 'var(--red)' : 'var(--text-muted)'}}>
                           🔧 DÉGÂTS {vehicleDamage.isEstimated && <span style={{fontSize: '9px', color: 'var(--orange)'}}>(EST)</span>}
                         </span>
-                        <span style={{fontWeight: '700', fontSize: '14px', color: vehicleDamage.total > 50 ? 'var(--red)' : vehicleDamage.total > 20 ? 'var(--orange)' : 'var(--green)'}}>{Math.round(vehicleDamage.total)}%</span>
-                      </div>
-                      
-                      {/* Voiture SVG vue de dessus */}
-                      <div style={{position: 'relative', width: '100%', height: '140px', display: 'flex', justifyContent: 'center', alignItems: 'center'}}>
-                        <svg viewBox="0 0 100 160" style={{width: '80px', height: '140px'}}>
-                          {/* Carrosserie principale */}
-                          <path d="M30 20 L70 20 L75 40 L75 120 L70 140 L30 140 L25 120 L25 40 Z" 
-                                fill="var(--bg-input)" stroke="var(--border)" strokeWidth="1"/>
-                          
-                          {/* Cockpit */}
-                          <ellipse cx="50" cy="75" rx="15" ry="25" fill="var(--bg-dark)" stroke="var(--border)" strokeWidth="1"/>
-                          
-                          {/* Aileron avant */}
-                          <rect x="15" y="12" width="70" height="8" rx="2" 
-                                fill={vehicleDamage.front > 30 ? 'var(--red)' : vehicleDamage.front > 10 ? 'var(--orange)' : 'var(--green)'} 
-                                opacity="0.8"/>
-                          
-                          {/* Aileron arrière */}
-                          <rect x="20" y="140" width="60" height="8" rx="2" 
-                                fill={vehicleDamage.rear > 30 ? 'var(--red)' : vehicleDamage.rear > 10 ? 'var(--orange)' : 'var(--green)'} 
-                                opacity="0.8"/>
-                          
-                          {/* Pneu AVG */}
-                          <rect x="10" y="25" width="12" height="25" rx="3" 
-                                fill={vehicleDamage.left > 30 ? 'var(--red)' : vehicleDamage.left > 10 ? 'var(--orange)' : '#333'}
-                                stroke={vehicleDamage.left > 10 ? (vehicleDamage.left > 30 ? 'var(--red)' : 'var(--orange)') : 'var(--green)'} strokeWidth="2"/>
-                          
-                          {/* Pneu AVD */}
-                          <rect x="78" y="25" width="12" height="25" rx="3" 
-                                fill={vehicleDamage.right > 30 ? 'var(--red)' : vehicleDamage.right > 10 ? 'var(--orange)' : '#333'}
-                                stroke={vehicleDamage.right > 10 ? (vehicleDamage.right > 30 ? 'var(--red)' : 'var(--orange)') : 'var(--green)'} strokeWidth="2"/>
-                          
-                          {/* Pneu ARG */}
-                          <rect x="10" y="110" width="12" height="25" rx="3" 
-                                fill={vehicleDamage.left > 30 ? 'var(--red)' : vehicleDamage.left > 10 ? 'var(--orange)' : '#333'}
-                                stroke={vehicleDamage.left > 10 ? (vehicleDamage.left > 30 ? 'var(--red)' : 'var(--orange)') : 'var(--green)'} strokeWidth="2"/>
-                          
-                          {/* Pneu ARD */}
-                          <rect x="78" y="110" width="12" height="25" rx="3" 
-                                fill={vehicleDamage.right > 30 ? 'var(--red)' : vehicleDamage.right > 10 ? 'var(--orange)' : '#333'}
-                                stroke={vehicleDamage.right > 10 ? (vehicleDamage.right > 30 ? 'var(--red)' : 'var(--orange)') : 'var(--green)'} strokeWidth="2"/>
-                          
-                          {/* Sidepods gauche */}
-                          <rect x="18" y="50" width="8" height="40" rx="2" 
-                                fill={vehicleDamage.aero > 30 ? 'var(--red)' : vehicleDamage.aero > 10 ? 'var(--orange)' : 'var(--bg-input)'}
-                                stroke="var(--border)" strokeWidth="1"/>
-                          
-                          {/* Sidepods droit */}
-                          <rect x="74" y="50" width="8" height="40" rx="2" 
-                                fill={vehicleDamage.aero > 30 ? 'var(--red)' : vehicleDamage.aero > 10 ? 'var(--orange)' : 'var(--bg-input)'}
-                                stroke="var(--border)" strokeWidth="1"/>
-                          
-                          {/* Moteur (zone centrale arrière) */}
-                          <rect x="35" y="95" width="30" height="20" rx="3" 
-                                fill={vehicleDamage.engine > 30 ? 'var(--red)' : vehicleDamage.engine > 10 ? 'var(--orange)' : 'var(--bg-input)'}
-                                stroke={vehicleDamage.engine > 10 ? (vehicleDamage.engine > 30 ? 'var(--red)' : 'var(--orange)') : 'var(--border)'} strokeWidth="1"/>
-                          
-                          {/* Numéro */}
-                          <text x="50" y="80" textAnchor="middle" fill="var(--text)" fontSize="14" fontWeight="700">{selectedTeam}</text>
-                        </svg>
-                        
-                        {/* Labels de pourcentage positionnés autour */}
-                        <div style={{position: 'absolute', top: '0', left: '50%', transform: 'translateX(-50%)', fontSize: '9px', fontWeight: '700', color: vehicleDamage.front > 30 ? 'var(--red)' : vehicleDamage.front > 10 ? 'var(--orange)' : 'var(--green)'}}>
-                          AV {Math.round(vehicleDamage.front)}%
+                        <span style={{fontWeight: '700', fontSize: '12px', color: vehicleDamage.total > 50 ? 'var(--red)' : vehicleDamage.total > 20 ? 'var(--orange)' : 'var(--green)'}}>{Math.round(vehicleDamage.total)}%</span>
+                      </summary>
+                      <div style={{padding: '12px'}}>
+                        {/* Voiture SVG vue de dessus */}
+                        <div style={{position: 'relative', width: '100%', height: '140px', display: 'flex', justifyContent: 'center', alignItems: 'center'}}>
+                          <svg viewBox="0 0 100 160" style={{width: '80px', height: '140px'}}>
+                            <path d="M30 20 L70 20 L75 40 L75 120 L70 140 L30 140 L25 120 L25 40 Z" fill="var(--bg-input)" stroke="var(--border)" strokeWidth="1"/>
+                            <ellipse cx="50" cy="75" rx="15" ry="25" fill="var(--bg-dark)" stroke="var(--border)" strokeWidth="1"/>
+                            <rect x="15" y="12" width="70" height="8" rx="2" fill={vehicleDamage.front > 30 ? 'var(--red)' : vehicleDamage.front > 10 ? 'var(--orange)' : 'var(--green)'} opacity="0.8"/>
+                            <rect x="20" y="140" width="60" height="8" rx="2" fill={vehicleDamage.rear > 30 ? 'var(--red)' : vehicleDamage.rear > 10 ? 'var(--orange)' : 'var(--green)'} opacity="0.8"/>
+                            <rect x="10" y="25" width="12" height="25" rx="3" fill={vehicleDamage.left > 30 ? 'var(--red)' : vehicleDamage.left > 10 ? 'var(--orange)' : '#333'} stroke={vehicleDamage.left > 10 ? (vehicleDamage.left > 30 ? 'var(--red)' : 'var(--orange)') : 'var(--green)'} strokeWidth="2"/>
+                            <rect x="78" y="25" width="12" height="25" rx="3" fill={vehicleDamage.right > 30 ? 'var(--red)' : vehicleDamage.right > 10 ? 'var(--orange)' : '#333'} stroke={vehicleDamage.right > 10 ? (vehicleDamage.right > 30 ? 'var(--red)' : 'var(--orange)') : 'var(--green)'} strokeWidth="2"/>
+                            <rect x="10" y="110" width="12" height="25" rx="3" fill={vehicleDamage.left > 30 ? 'var(--red)' : vehicleDamage.left > 10 ? 'var(--orange)' : '#333'} stroke={vehicleDamage.left > 10 ? (vehicleDamage.left > 30 ? 'var(--red)' : 'var(--orange)') : 'var(--green)'} strokeWidth="2"/>
+                            <rect x="78" y="110" width="12" height="25" rx="3" fill={vehicleDamage.right > 30 ? 'var(--red)' : vehicleDamage.right > 10 ? 'var(--orange)' : '#333'} stroke={vehicleDamage.right > 10 ? (vehicleDamage.right > 30 ? 'var(--red)' : 'var(--orange)') : 'var(--green)'} strokeWidth="2"/>
+                            <rect x="18" y="50" width="8" height="40" rx="2" fill={vehicleDamage.aero > 30 ? 'var(--red)' : vehicleDamage.aero > 10 ? 'var(--orange)' : 'var(--bg-input)'} stroke="var(--border)" strokeWidth="1"/>
+                            <rect x="74" y="50" width="8" height="40" rx="2" fill={vehicleDamage.aero > 30 ? 'var(--red)' : vehicleDamage.aero > 10 ? 'var(--orange)' : 'var(--bg-input)'} stroke="var(--border)" strokeWidth="1"/>
+                            <rect x="35" y="95" width="30" height="20" rx="3" fill={vehicleDamage.engine > 30 ? 'var(--red)' : vehicleDamage.engine > 10 ? 'var(--orange)' : 'var(--bg-input)'} stroke={vehicleDamage.engine > 10 ? (vehicleDamage.engine > 30 ? 'var(--red)' : 'var(--orange)') : 'var(--border)'} strokeWidth="1"/>
+                            <text x="50" y="80" textAnchor="middle" fill="var(--text)" fontSize="14" fontWeight="700">{selectedTeam}</text>
+                          </svg>
+                          <div style={{position: 'absolute', top: '0', left: '50%', transform: 'translateX(-50%)', fontSize: '9px', fontWeight: '700', color: vehicleDamage.front > 30 ? 'var(--red)' : vehicleDamage.front > 10 ? 'var(--orange)' : 'var(--green)'}}>AV {Math.round(vehicleDamage.front)}%</div>
+                          <div style={{position: 'absolute', bottom: '0', left: '50%', transform: 'translateX(-50%)', fontSize: '9px', fontWeight: '700', color: vehicleDamage.rear > 30 ? 'var(--red)' : vehicleDamage.rear > 10 ? 'var(--orange)' : 'var(--green)'}}>AR {Math.round(vehicleDamage.rear)}%</div>
+                          <div style={{position: 'absolute', left: '0', top: '50%', transform: 'translateY(-50%)', fontSize: '9px', fontWeight: '700', color: vehicleDamage.left > 30 ? 'var(--red)' : vehicleDamage.left > 10 ? 'var(--orange)' : 'var(--green)'}}>G {Math.round(vehicleDamage.left)}%</div>
+                          <div style={{position: 'absolute', right: '0', top: '50%', transform: 'translateY(-50%)', fontSize: '9px', fontWeight: '700', color: vehicleDamage.right > 30 ? 'var(--red)' : vehicleDamage.right > 10 ? 'var(--orange)' : 'var(--green)'}}>D {Math.round(vehicleDamage.right)}%</div>
                         </div>
-                        <div style={{position: 'absolute', bottom: '0', left: '50%', transform: 'translateX(-50%)', fontSize: '9px', fontWeight: '700', color: vehicleDamage.rear > 30 ? 'var(--red)' : vehicleDamage.rear > 10 ? 'var(--orange)' : 'var(--green)'}}>
-                          AR {Math.round(vehicleDamage.rear)}%
+                        <div style={{display: 'flex', justifyContent: 'space-around', marginTop: '10px', paddingTop: '8px', borderTop: '1px solid var(--border)'}}>
+                          <div style={{textAlign: 'center'}}><div style={{fontSize: '14px'}}>🛩️</div><div style={{fontSize: '8px', color: 'var(--text-muted)'}}>Aéro</div><div style={{fontSize: '11px', fontWeight: '700', color: vehicleDamage.aero > 30 ? 'var(--red)' : vehicleDamage.aero > 10 ? 'var(--orange)' : 'var(--green)'}}>{Math.round(vehicleDamage.aero)}%</div></div>
+                          <div style={{textAlign: 'center'}}><div style={{fontSize: '14px'}}>⚙️</div><div style={{fontSize: '8px', color: 'var(--text-muted)'}}>Moteur</div><div style={{fontSize: '11px', fontWeight: '700', color: vehicleDamage.engine > 30 ? 'var(--red)' : vehicleDamage.engine > 10 ? 'var(--orange)' : 'var(--green)'}}>{Math.round(vehicleDamage.engine)}%</div></div>
+                          <div style={{textAlign: 'center'}}><div style={{fontSize: '14px'}}>🔩</div><div style={{fontSize: '8px', color: 'var(--text-muted)'}}>Susp.</div><div style={{fontSize: '11px', fontWeight: '700', color: vehicleDamage.suspension > 30 ? 'var(--red)' : vehicleDamage.suspension > 10 ? 'var(--orange)' : 'var(--green)'}}>{Math.round(vehicleDamage.suspension)}%</div></div>
                         </div>
-                        <div style={{position: 'absolute', left: '0', top: '50%', transform: 'translateY(-50%)', fontSize: '9px', fontWeight: '700', color: vehicleDamage.left > 30 ? 'var(--red)' : vehicleDamage.left > 10 ? 'var(--orange)' : 'var(--green)'}}>
-                          G {Math.round(vehicleDamage.left)}%
-                        </div>
-                        <div style={{position: 'absolute', right: '0', top: '50%', transform: 'translateY(-50%)', fontSize: '9px', fontWeight: '700', color: vehicleDamage.right > 30 ? 'var(--red)' : vehicleDamage.right > 10 ? 'var(--orange)' : 'var(--green)'}}>
-                          D {Math.round(vehicleDamage.right)}%
+                        <div style={{marginTop: '8px', textAlign: 'center', padding: '4px 8px', borderRadius: '4px', fontSize: '10px', fontWeight: '600', background: vehicleDamage.total > 50 ? 'rgba(255,51,68,0.2)' : vehicleDamage.total > 20 ? 'rgba(255,136,0,0.2)' : 'rgba(0,255,102,0.1)', color: vehicleDamage.total > 50 ? 'var(--red)' : vehicleDamage.total > 20 ? 'var(--orange)' : 'var(--green)'}}>
+                          {vehicleDamage.total > 50 ? '⚠️ CRITIQUE - Rentrer aux stands!' : vehicleDamage.total > 20 ? '⚠️ Dégâts modérés' : vehicleDamage.total > 5 ? '✅ Dégâts mineurs' : '✅ Véhicule intact'}
                         </div>
                       </div>
-                      
-                      {/* Indicateurs mécaniques en bas */}
-                      <div style={{display: 'flex', justifyContent: 'space-around', marginTop: '10px', paddingTop: '8px', borderTop: '1px solid var(--border)'}}>
-                        <div style={{textAlign: 'center'}}>
-                          <div style={{fontSize: '14px'}}>🛩️</div>
-                          <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>Aéro</div>
-                          <div style={{fontSize: '11px', fontWeight: '700', color: vehicleDamage.aero > 30 ? 'var(--red)' : vehicleDamage.aero > 10 ? 'var(--orange)' : 'var(--green)'}}>{Math.round(vehicleDamage.aero)}%</div>
-                        </div>
-                        <div style={{textAlign: 'center'}}>
-                          <div style={{fontSize: '14px'}}>⚙️</div>
-                          <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>Moteur</div>
-                          <div style={{fontSize: '11px', fontWeight: '700', color: vehicleDamage.engine > 30 ? 'var(--red)' : vehicleDamage.engine > 10 ? 'var(--orange)' : 'var(--green)'}}>{Math.round(vehicleDamage.engine)}%</div>
-                        </div>
-                        <div style={{textAlign: 'center'}}>
-                          <div style={{fontSize: '14px'}}>🔩</div>
-                          <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>Susp.</div>
-                          <div style={{fontSize: '11px', fontWeight: '700', color: vehicleDamage.suspension > 30 ? 'var(--red)' : vehicleDamage.suspension > 10 ? 'var(--orange)' : 'var(--green)'}}>{Math.round(vehicleDamage.suspension)}%</div>
-                        </div>
-                      </div>
-                      
-                      {/* Message d'état */}
-                      <div style={{marginTop: '8px', textAlign: 'center', padding: '4px 8px', borderRadius: '4px', fontSize: '10px', fontWeight: '600',
-                        background: vehicleDamage.total > 50 ? 'rgba(255,51,68,0.2)' : vehicleDamage.total > 20 ? 'rgba(255,136,0,0.2)' : 'rgba(0,255,102,0.1)',
-                        color: vehicleDamage.total > 50 ? 'var(--red)' : vehicleDamage.total > 20 ? 'var(--orange)' : 'var(--green)'
-                      }}>
-                        {vehicleDamage.total > 50 ? '⚠️ CRITIQUE - Rentrer aux stands!' : 
-                         vehicleDamage.total > 20 ? '⚠️ Dégâts modérés' : 
-                         vehicleDamage.total > 5 ? '✅ Dégâts mineurs' : 
-                         '✅ Véhicule intact'}
-                      </div>
-                    </div>
+                    </details>
                     
-                    {/* ALERTES ACTIVES */}
-                    {activeAlerts.length > 0 && (
-                      <div className="card help-tooltip" data-help="ALERTES - Notifications importantes: carburant bas, usure pneus, météo changeante, écarts critiques. Cliquez ✕ pour fermer une alerte." style={{padding: '10px', background: 'rgba(255,51,68,0.1)', border: '1px solid var(--red)'}}>
-                        <div style={{fontWeight: '700', fontSize: '11px', marginBottom: '8px', color: 'var(--red)', display: 'flex', alignItems: 'center', gap: '6px'}}>
-                          <span style={{animation: 'pulse 1s infinite'}}>🚨</span> ALERTES ({activeAlerts.length})
-                        </div>
-                        <div style={{display: 'flex', flexDirection: 'column', gap: '4px', maxHeight: '100px', overflowY: 'auto'}}>
-                          {activeAlerts.map(alert => (
-                            <div key={alert.id} style={{
-                              padding: '6px 8px', 
-                              background: alert.severity === 'critical' ? 'rgba(255,51,68,0.2)' : 'rgba(255,136,0,0.2)',
-                              borderRadius: '4px',
-                              fontSize: '10px',
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'space-between'
-                            }}>
-                              <span style={{color: alert.severity === 'critical' ? 'var(--red)' : 'var(--orange)'}}>
-                                {alert.type === 'fuel' ? '⛽' : alert.type === 'tire' ? '🛞' : alert.type === 'weather' ? '🌧️' : alert.type === 'gap' ? '📏' : '⚠️'} {alert.message}
-                              </span>
-                              <button onClick={() => window.AGP_Alerts?.dismiss(alert.id)} style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:'10px'}}>✕</button>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
+                    {/* ALERTES SUPPRIMÉES v33.19 */}
                     
                     {/* Pit Strategy */}
                     <div className="card help-tooltip" data-help="PIT STRATEGY - Tour prévu pour le prochain arrêt, fenêtre optimale, durée estimée et type d'arrêt (carburant seul, pneus, ou les deux)." style={{padding: '12px'}}>
@@ -10208,183 +10278,176 @@
                     })()}
                     
                     {/* ═══════════════════════════════════════════════════════════════ */}
-                    {/* v33.19: TIMING / DELTA - Temps estimé et deltas */}
+                    {/* v33.19: GRID 2x2 - TIMING / FREINS / ÉLECTRONIQUE / CLASSE */}
                     {/* ═══════════════════════════════════════════════════════════════ */}
-                    {(() => {
-                      const timing = currentTeam?.timing || {};
+                    <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px'}}>
                       
-                      const formatTime = (sec) => {
-                        if (!sec || sec <= 0) return '--:--.---';
-                        const m = Math.floor(sec / 60);
-                        const s = (sec % 60).toFixed(3).padStart(6, '0');
-                        return `${m}:${s}`;
-                      };
-                      
-                      const formatDelta = (delta) => {
-                        if (delta === null || delta === undefined) return '--';
-                        const sign = delta >= 0 ? '+' : '';
-                        return sign + delta.toFixed(3);
-                      };
-                      
-                      const deltaColor = (delta) => {
-                        if (delta === null || delta === undefined) return 'var(--text-muted)';
-                        return delta < 0 ? 'var(--green)' : delta > 0.5 ? 'var(--red)' : 'var(--orange)';
-                      };
-                      
-                      return (
-                        <div className="card help-tooltip" data-help="TIMING - Temps estimé du tour en cours, delta par rapport au meilleur tour session et record absolu. Vert = gain, Rouge = perte." style={{padding: '12px'}}>
-                          <div style={{fontWeight: '700', fontSize: '12px', marginBottom: '10px', color: 'var(--text-muted)'}}>⏱️ TIMING LIVE</div>
-                          
-                          {/* Temps estimé tour en cours */}
-                          <div style={{textAlign: 'center', padding: '8px', background: 'var(--bg-input)', borderRadius: '6px', marginBottom: '8px'}}>
-                            <div style={{fontSize: '9px', color: 'var(--text-muted)'}}>Estimé ce tour</div>
-                            <div style={{fontSize: '20px', fontWeight: '700', fontFamily: 'JetBrains Mono', color: timing.estimatedLapTime > 0 ? 'var(--cyan)' : 'var(--text-muted)'}}>{formatTime(timing.estimatedLapTime)}</div>
-                          </div>
-                          
-                          {/* Deltas */}
-                          <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', marginBottom: '8px'}}>
-                            <div style={{padding: '6px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
-                              <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>vs Session Best</div>
-                              <div style={{fontSize: '14px', fontWeight: '700', fontFamily: 'JetBrains Mono', color: deltaColor(timing.sessionBestDelta)}}>{formatDelta(timing.sessionBestDelta)}</div>
-                            </div>
-                            <div style={{padding: '6px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
-                              <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>vs All-Time Best</div>
-                              <div style={{fontSize: '14px', fontWeight: '700', fontFamily: 'JetBrains Mono', color: deltaColor(timing.allTimeBestDelta)}}>{formatDelta(timing.allTimeBestDelta)}</div>
-                            </div>
-                          </div>
-                          
-                          {/* Records */}
-                          <div style={{display: 'flex', justifyContent: 'space-between', fontSize: '9px', padding: '6px', background: 'rgba(255,193,7,0.1)', borderRadius: '4px'}}>
-                            <span>🏆 Session: <strong style={{color: 'var(--cyan)'}}>{formatTime(timing.sessionBest)}</strong></span>
-                            <span>👑 Record: <strong style={{color: 'var(--gold)'}}>{formatTime(timing.allTimeBest)}</strong></span>
-                          </div>
-                          
-                          {/* Historique 5 derniers tours */}
-                          {timing.previousLaps && timing.previousLaps.length > 0 && (
-                            <div style={{marginTop: '8px', paddingTop: '8px', borderTop: '1px solid var(--border)'}}>
-                              <div style={{fontSize: '9px', color: 'var(--text-muted)', marginBottom: '4px'}}>📊 5 derniers tours</div>
-                              <div style={{display: 'flex', gap: '4px', justifyContent: 'space-between'}}>
-                                {timing.previousLaps.slice(0, 5).map((t, i) => (
-                                  <div key={i} style={{flex: 1, textAlign: 'center', padding: '4px', background: 'var(--bg-input)', borderRadius: '3px', fontSize: '10px', fontFamily: 'JetBrains Mono'}}>
-                                    {formatTime(t).split(':')[1]?.substring(0, 5) || '--'}
+                      {/* ═══ TIMING LIVE ═══ */}
+                      <details open style={{background: 'var(--bg-card)', borderRadius: '6px', border: '1px solid var(--border)', overflow: 'hidden'}}>
+                        <summary style={{padding: '8px 10px', cursor: 'pointer', background: 'var(--bg-header)', fontSize: '10px', fontWeight: '700', color: 'var(--cyan)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', userSelect: 'none'}}>
+                          <span>⏱️ TIMING LIVE</span>
+                          <span style={{fontSize: '8px', color: 'var(--text-muted)'}}>▼</span>
+                        </summary>
+                        <div style={{padding: '8px'}}>
+                          {(() => {
+                            const timing = currentTeam?.timing || {};
+                            const formatTime = (sec) => {
+                              if (!sec || sec <= 0) return '--:--.---';
+                              const m = Math.floor(sec / 60);
+                              const s = (sec % 60).toFixed(3).padStart(6, '0');
+                              return `${m}:${s}`;
+                            };
+                            const formatDelta = (delta) => {
+                              if (delta === null || delta === undefined) return '--';
+                              return (delta >= 0 ? '+' : '') + delta.toFixed(3);
+                            };
+                            const deltaColor = (delta) => {
+                              if (delta === null || delta === undefined) return 'var(--text-muted)';
+                              return delta < 0 ? 'var(--green)' : delta > 0.5 ? 'var(--red)' : 'var(--orange)';
+                            };
+                            return (
+                              <React.Fragment>
+                                <div style={{textAlign: 'center', padding: '6px', background: 'var(--bg-input)', borderRadius: '4px', marginBottom: '6px'}}>
+                                  <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>Estimé ce tour</div>
+                                  <div style={{fontSize: '16px', fontWeight: '800', fontFamily: 'JetBrains Mono', color: timing.estimatedLapTime > 0 ? 'var(--cyan)' : 'var(--text-muted)'}}>{formatTime(timing.estimatedLapTime)}</div>
+                                </div>
+                                <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px', marginBottom: '6px'}}>
+                                  <div style={{padding: '4px', background: 'var(--bg-input)', borderRadius: '3px', textAlign: 'center'}}>
+                                    <div style={{fontSize: '7px', color: 'var(--text-muted)'}}>vs Session Best</div>
+                                    <div style={{fontSize: '11px', fontWeight: '700', fontFamily: 'JetBrains Mono', color: deltaColor(timing.sessionBestDelta)}}>{formatDelta(timing.sessionBestDelta)}</div>
                                   </div>
-                                ))}
-                              </div>
-                            </div>
-                          )}
+                                  <div style={{padding: '4px', background: 'var(--bg-input)', borderRadius: '3px', textAlign: 'center'}}>
+                                    <div style={{fontSize: '7px', color: 'var(--text-muted)'}}>vs All-Time Best</div>
+                                    <div style={{fontSize: '11px', fontWeight: '700', fontFamily: 'JetBrains Mono', color: deltaColor(timing.allTimeBestDelta)}}>{formatDelta(timing.allTimeBestDelta)}</div>
+                                  </div>
+                                </div>
+                                <div style={{display: 'flex', justifyContent: 'space-between', fontSize: '8px', padding: '4px', background: 'rgba(255,193,7,0.1)', borderRadius: '3px'}}>
+                                  <span>🏆 <strong style={{color: 'var(--cyan)'}}>{formatTime(timing.sessionBest)}</strong></span>
+                                  <span>👑 <strong style={{color: 'var(--gold)'}}>{formatTime(timing.allTimeBest)}</strong></span>
+                                </div>
+                              </React.Fragment>
+                            );
+                          })()}
                         </div>
-                      );
-                    })()}
-                    
-                    {/* ═══════════════════════════════════════════════════════════════ */}
-                    {/* v33.19: FREINS - Températures */}
-                    {/* ═══════════════════════════════════════════════════════════════ */}
-                    {(() => {
-                      const brakes = currentTeam?.brakes || {};
+                      </details>
                       
-                      const getBrakeColor = (temp) => {
-                        if (!temp || temp <= 0) return 'var(--text-muted)';
-                        if (temp < 200) return 'var(--blue)'; // Froid
-                        if (temp < 400) return 'var(--green)'; // Optimal
-                        if (temp < 600) return 'var(--orange)'; // Chaud
-                        return 'var(--red)'; // Surchauffe
-                      };
-                      
-                      return (
-                        <div className="card help-tooltip" data-help="FREINS - Températures des disques. Bleu = froid, Vert = optimal (400-600°C), Orange = chaud, Rouge = surchauffe (>700°C)." style={{padding: '12px'}}>
-                          <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px'}}>
-                            <span style={{fontWeight: '700', fontSize: '12px', color: 'var(--text-muted)'}}>🔥 FREINS</span>
-                            <span style={{fontSize: '11px', fontWeight: '600', color: getBrakeColor(brakes.tempAvg)}}>{brakes.tempAvg > 0 ? Math.round(brakes.tempAvg) + '°C' : '--'}</span>
-                          </div>
-                          
-                          <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', marginBottom: '8px'}}>
-                            <div style={{padding: '8px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center', border: '2px solid ' + getBrakeColor(brakes.tempFL)}}>
-                              <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>AVG</div>
-                              <div style={{fontSize: '16px', fontWeight: '700', color: getBrakeColor(brakes.tempFL)}}>{brakes.tempFL > 0 ? Math.round(brakes.tempFL) + '°' : '--'}</div>
-                            </div>
-                            <div style={{padding: '8px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center', border: '2px solid ' + getBrakeColor(brakes.tempFR)}}>
-                              <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>AVD</div>
-                              <div style={{fontSize: '16px', fontWeight: '700', color: getBrakeColor(brakes.tempFR)}}>{brakes.tempFR > 0 ? Math.round(brakes.tempFR) + '°' : '--'}</div>
-                            </div>
-                          </div>
-                          
-                          {/* Répartition freinage */}
-                          <div style={{textAlign: 'center', padding: '6px', background: 'rgba(88,166,255,0.1)', borderRadius: '4px', fontSize: '10px'}}>
-                            Répartition: <strong style={{color: brakes.bias > 0 ? 'var(--cyan)' : 'var(--text-muted)'}}>{brakes.bias > 0 ? brakes.bias.toFixed(1) + '%' : '--'}</strong> avant
-                          </div>
+                      {/* ═══ FREINS ═══ */}
+                      <details open style={{background: 'var(--bg-card)', borderRadius: '6px', border: '1px solid var(--border)', overflow: 'hidden'}}>
+                        <summary style={{padding: '8px 10px', cursor: 'pointer', background: 'var(--bg-header)', fontSize: '10px', fontWeight: '700', color: 'var(--red)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', userSelect: 'none'}}>
+                          <span>🔥 FREINS</span>
+                          <span style={{fontSize: '9px', color: (() => {
+                            const avg = currentTeam?.brakes?.tempAvg || 0;
+                            if (avg < 200) return 'var(--blue)';
+                            if (avg < 400) return 'var(--green)';
+                            if (avg < 600) return 'var(--orange)';
+                            return 'var(--red)';
+                          })()}}>{currentTeam?.brakes?.tempAvg > 0 ? Math.round(currentTeam.brakes.tempAvg) + '°C' : '--'}</span>
+                        </summary>
+                        <div style={{padding: '8px'}}>
+                          {(() => {
+                            const brakes = currentTeam?.brakes || {};
+                            const getBrakeColor = (temp) => {
+                              if (!temp || temp <= 0) return 'var(--text-muted)';
+                              if (temp < 200) return '#58a6ff';
+                              if (temp < 400) return '#3fb950';
+                              if (temp < 600) return '#ff8800';
+                              return '#ff3344';
+                            };
+                            return (
+                              <React.Fragment>
+                                <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '3px', marginBottom: '4px'}}>
+                                  {[
+                                    { label: 'AV-G', value: brakes.tempFL, pos: 'top' },
+                                    { label: 'AV-D', value: brakes.tempFR, pos: 'top' },
+                                    { label: 'AR-G', value: brakes.tempRL, pos: 'bottom' },
+                                    { label: 'AR-D', value: brakes.tempRR, pos: 'bottom' }
+                                  ].map((b, i) => (
+                                    <div key={i} style={{padding: '4px', background: 'var(--bg-input)', borderRadius: '3px', textAlign: 'center', [b.pos === 'top' ? 'borderTop' : 'borderBottom']: '2px solid ' + getBrakeColor(b.value)}}>
+                                      <div style={{fontSize: '7px', color: 'var(--text-muted)'}}>{b.label}</div>
+                                      <div style={{fontSize: '12px', fontWeight: '700', fontFamily: 'JetBrains Mono', color: getBrakeColor(b.value)}}>{b.value > 0 ? Math.round(b.value) + '°' : '--'}</div>
+                                    </div>
+                                  ))}
+                                </div>
+                                <div style={{textAlign: 'center', fontSize: '8px', color: 'var(--cyan)'}}>
+                                  Répart: <strong>{brakes.bias > 0 ? brakes.bias.toFixed(1) + '%' : '--'}</strong> av
+                                </div>
+                              </React.Fragment>
+                            );
+                          })()}
                         </div>
-                      );
-                    })()}
-                    
-                    {/* ═══════════════════════════════════════════════════════════════ */}
-                    {/* v33.19: ÉLECTRONIQUE - ABS / TC / Map */}
-                    {/* ═══════════════════════════════════════════════════════════════ */}
-                    {(() => {
-                      const elec = currentTeam?.electronics || {};
+                      </details>
                       
-                      return (
-                        <div className="card help-tooltip" data-help="ÉLECTRONIQUE - Niveaux d'ABS, contrôle de traction et mode moteur. Plus le niveau est élevé, plus l'aide est active." style={{padding: '12px'}}>
-                          <div style={{fontWeight: '700', fontSize: '12px', marginBottom: '10px', color: 'var(--text-muted)'}}>⚡ ÉLECTRONIQUE</div>
-                          
-                          <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '6px'}}>
-                            <div style={{padding: '8px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
-                              <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>ABS</div>
-                              <div style={{fontSize: '18px', fontWeight: '700', color: elec.absLevel > 0 ? 'var(--cyan)' : 'var(--text-muted)'}}>{elec.absLevel || '--'}</div>
-                            </div>
-                            <div style={{padding: '8px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
-                              <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>TC</div>
-                              <div style={{fontSize: '18px', fontWeight: '700', color: elec.tcLevel > 0 ? 'var(--orange)' : 'var(--text-muted)'}}>{elec.tcLevel || '--'}</div>
-                            </div>
-                            <div style={{padding: '8px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
-                              <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>MAP</div>
-                              <div style={{fontSize: '18px', fontWeight: '700', color: elec.engineMap > 0 ? 'var(--green)' : 'var(--text-muted)'}}>{elec.engineMap || '--'}</div>
-                            </div>
-                          </div>
-                          
-                          {/* RPM Max */}
-                          <div style={{marginTop: '8px', textAlign: 'center', fontSize: '9px', color: 'var(--text-muted)'}}>
-                            Max: <strong>{elec.maxRPM > 0 ? elec.maxRPM : '--'}</strong> RPM | <strong>{elec.maxGears > 0 ? elec.maxGears : '--'}</strong> rapports
-                          </div>
+                      {/* ═══ ÉLECTRONIQUE ═══ */}
+                      <details open style={{background: 'var(--bg-card)', borderRadius: '6px', border: '1px solid var(--border)', overflow: 'hidden'}}>
+                        <summary style={{padding: '8px 10px', cursor: 'pointer', background: 'var(--bg-header)', fontSize: '10px', fontWeight: '700', color: 'var(--yellow)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', userSelect: 'none'}}>
+                          <span>⚡ ÉLECTRONIQUE</span>
+                          <span style={{fontSize: '8px', color: 'var(--text-muted)'}}>▼</span>
+                        </summary>
+                        <div style={{padding: '8px'}}>
+                          {(() => {
+                            const elec = currentTeam?.electronics || {};
+                            return (
+                              <React.Fragment>
+                                <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '3px'}}>
+                                  <div style={{padding: '4px', background: 'var(--bg-input)', borderRadius: '3px', textAlign: 'center'}}>
+                                    <div style={{fontSize: '7px', color: 'var(--text-muted)'}}>ABS</div>
+                                    <div style={{fontSize: '14px', fontWeight: '700', color: elec.absLevel > 0 ? 'var(--cyan)' : 'var(--text-muted)'}}>{elec.absLevel || '--'}</div>
+                                  </div>
+                                  <div style={{padding: '4px', background: 'var(--bg-input)', borderRadius: '3px', textAlign: 'center'}}>
+                                    <div style={{fontSize: '7px', color: 'var(--text-muted)'}}>TC</div>
+                                    <div style={{fontSize: '14px', fontWeight: '700', color: elec.tcLevel > 0 ? 'var(--orange)' : 'var(--text-muted)'}}>{elec.tcLevel || '--'}</div>
+                                  </div>
+                                  <div style={{padding: '4px', background: 'var(--bg-input)', borderRadius: '3px', textAlign: 'center'}}>
+                                    <div style={{fontSize: '7px', color: 'var(--text-muted)'}}>MAP</div>
+                                    <div style={{fontSize: '14px', fontWeight: '700', color: elec.engineMap > 0 ? 'var(--green)' : 'var(--text-muted)'}}>{elec.engineMap || '--'}</div>
+                                  </div>
+                                </div>
+                                <div style={{marginTop: '4px', textAlign: 'center', fontSize: '8px', color: 'var(--text-muted)'}}>
+                                  <strong>{elec.maxRPM || '--'}</strong> RPM | <strong>{elec.maxGears || '--'}</strong> rap
+                                </div>
+                              </React.Fragment>
+                            );
+                          })()}
                         </div>
-                      );
-                    })()}
-                    
-                    {/* ═══════════════════════════════════════════════════════════════ */}
-                    {/* v33.19: CLASSEMENT CLASSE - Position dans la classe */}
-                    {/* ═══════════════════════════════════════════════════════════════ */}
-                    {(() => {
-                      const standings = currentTeam?.standings || {};
+                      </details>
                       
-                      return (
-                        <div className="card help-tooltip" data-help="CLASSEMENT CLASSE - Position dans votre catégorie si course multi-classes. Affiche aussi le nombre d'adversaires." style={{padding: '12px'}}>
-                          <div style={{fontWeight: '700', fontSize: '12px', marginBottom: '10px', color: 'var(--text-muted)'}}>🏁 CLASSE</div>
-                          
-                          <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px'}}>
-                            <div>
-                              <div style={{fontSize: '9px', color: 'var(--text-muted)'}}>Catégorie</div>
-                              <div style={{fontSize: '14px', fontWeight: '700', color: standings.carClass ? 'var(--gold)' : 'var(--text-muted)'}}>{standings.carClass || 'N/A'}</div>
-                            </div>
-                            <div style={{textAlign: 'right'}}>
-                              <div style={{fontSize: '9px', color: 'var(--text-muted)'}}>Position classe</div>
-                              <div style={{fontSize: '20px', fontWeight: '700', color: standings.bestLapOpponentSameClassPosition > 0 ? 'var(--green)' : 'var(--text-muted)'}}>
-                                {standings.bestLapOpponentSameClassPosition || '-'}/{standings.playerClassOpponentsCount || '-'}
-                              </div>
-                            </div>
-                          </div>
-                          
-                          <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', fontSize: '10px'}}>
-                            <div style={{padding: '6px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
-                              <span style={{color: 'var(--text-muted)'}}>Total</span>
-                              <strong style={{marginLeft: '4px'}}>{standings.opponentsCount || '--'}</strong>
-                            </div>
-                            <div style={{padding: '6px', background: 'var(--bg-input)', borderRadius: '4px', textAlign: 'center'}}>
-                              <span style={{color: 'var(--text-muted)'}}>Tours</span>
-                              <strong style={{marginLeft: '4px'}}>{standings.completedLaps || '--'}</strong>
-                            </div>
-                          </div>
+                      {/* ═══ CLASSE ═══ */}
+                      <details open style={{background: 'var(--bg-card)', borderRadius: '6px', border: '1px solid var(--border)', overflow: 'hidden'}}>
+                        <summary style={{padding: '8px 10px', cursor: 'pointer', background: 'var(--bg-header)', fontSize: '10px', fontWeight: '700', color: 'var(--gold)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', userSelect: 'none'}}>
+                          <span>🏁 CLASSE</span>
+                          <span style={{fontSize: '9px', color: 'var(--green)'}}>{currentTeam?.standings?.bestLapOpponentSameClassPosition || '-'}/{currentTeam?.standings?.playerClassOpponentsCount || '-'}</span>
+                        </summary>
+                        <div style={{padding: '8px'}}>
+                          {(() => {
+                            const standings = currentTeam?.standings || {};
+                            return (
+                              <React.Fragment>
+                                <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px'}}>
+                                  <div>
+                                    <div style={{fontSize: '7px', color: 'var(--text-muted)'}}>Catégorie</div>
+                                    <div style={{fontSize: '12px', fontWeight: '700', color: standings.carClass ? 'var(--gold)' : 'var(--text-muted)'}}>{standings.carClass || 'N/A'}</div>
+                                  </div>
+                                  <div style={{textAlign: 'right'}}>
+                                    <div style={{fontSize: '7px', color: 'var(--text-muted)'}}>Position</div>
+                                    <div style={{fontSize: '16px', fontWeight: '800', color: 'var(--green)'}}>
+                                      {standings.bestLapOpponentSameClassPosition || '-'}/{standings.playerClassOpponentsCount || '-'}
+                                    </div>
+                                  </div>
+                                </div>
+                                <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '3px', fontSize: '9px'}}>
+                                  <div style={{padding: '4px', background: 'var(--bg-input)', borderRadius: '3px', textAlign: 'center'}}>
+                                    Total <strong>{standings.opponentsCount || '--'}</strong>
+                                  </div>
+                                  <div style={{padding: '4px', background: 'var(--bg-input)', borderRadius: '3px', textAlign: 'center'}}>
+                                    Tours <strong>{standings.completedLaps || '--'}</strong>
+                                  </div>
+                                </div>
+                              </React.Fragment>
+                            );
+                          })()}
                         </div>
-                      );
-                    })()}
+                      </details>
+                    </div>
                   </div>
                   
                 </div>
@@ -10687,42 +10750,6 @@
             </div>
           )}
           
-          {/* Modal Import */}
-          {showImportModal && (
-            <div style={{position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000}} onClick={() => setShowImportModal(false)}>
-              <div style={{background: 'var(--bg-card)', borderRadius: '10px', padding: '20px', maxWidth: '450px', width: '90%', border: '1px solid var(--border)'}} onClick={e => e.stopPropagation()}>
-                <h3 style={{marginBottom: '14px', fontSize: '14px'}}>📊 Importer données collectées</h3>
-                {!collectedData || Object.keys(collectedData).length === 0 ? (
-                  <p style={{color: 'var(--text-muted)', textAlign: 'center', padding: '25px', fontSize: '12px'}}>Aucune donnée. Roulez quelques tours!</p>
-                ) : (
-                  <div style={{display: 'flex', flexDirection: 'column', gap: '8px'}}>
-                    {EQUIPES.map(eq => {
-                      const data = collectedData[eq.id];
-                      if (!data) return null;
-                      return (
-                        <div key={eq.id} style={{padding: '10px', background: 'var(--bg-input)', borderRadius: '6px', borderLeft: '3px solid ' + eq.couleur}}>
-                          <div style={{display: 'flex', justifyContent: 'space-between', marginBottom: '6px'}}>
-                            <span style={{fontWeight: '700', color: eq.couleur, fontSize: '12px'}}>#{eq.id} {eq.nom}</span>
-                            <span style={{fontSize: '10px', color: 'var(--text-muted)'}}>{data.totalLaps} tours</span>
-                          </div>
-                          <div style={{display: 'flex', justifyContent: 'space-between', fontSize: '11px', marginBottom: '6px'}}>
-                            <span>Moy: {data.avgLapTimeStr}</span>
-                            <span>Best: <span style={{color: 'var(--green)'}}>{data.bestLapStr}</span></span>
-                            <span>Conso: {data.avgFuelCons.toFixed(2)}L</span>
-                          </div>
-                          <button onClick={() => handleImport(eq.id)} style={{width: '100%', padding: '6px', borderRadius: '4px', border: 'none', background: eq.couleur, color: '#000', fontWeight: '600', fontSize: '11px', cursor: 'pointer'}}>
-                            ✅ Importer
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-                <button onClick={() => setShowImportModal(false)} style={{width: '100%', marginTop: '12px', padding: '8px', borderRadius: '4px', border: 'none', background: 'var(--bg-input)', color: 'var(--text)', fontSize: '11px', cursor: 'pointer'}}>Fermer</button>
-              </div>
-            </div>
-          )}
-          
           <style>{`@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
     @keyframes alertPulse { 0%, 100% { box-shadow: 0 0 5px rgba(255,51,68,0.3); } 50% { box-shadow: 0 0 20px rgba(255,51,68,0.6); } }
     .alert-critical { animation: alertPulse 1s infinite; }`}</style>
@@ -10791,7 +10818,7 @@
             let migratedTeams = saved.map(t => {
               const baseSettings = createSettings();
               const savedSettings = t.settings || {};
-              return { ...t, pilots: (t.pilots || []).map(p => ({ ...p, lapTime: p.lapTime || '1:48.500', active: p.active !== false })), settings: { ...baseSettings, ...savedSettings, comboTimes: { ...baseSettings.comboTimes, ...(savedSettings.comboTimes || {}) }, comboCons: { ...baseSettings.comboCons, ...(savedSettings.comboCons || {}) }, pilotComboTimes: { ...(savedSettings.pilotComboTimes || {}) }, pilotComboCons: { ...(savedSettings.pilotComboCons || {}) }, tireChangeSec: savedSettings.tireChangeSec || baseSettings.tireChangeSec, defaultTireChange: savedSettings.defaultTireChange !== undefined ? savedSettings.defaultTireChange : baseSettings.defaultTireChange, tireChangeEvery: savedSettings.tireChangeEvery || baseSettings.tireChangeEvery, activeCombos: savedSettings.activeCombos || baseSettings.activeCombos }, stints: (t.stints || []).map(s => ({ ...s, tireChange: s.tireChange !== undefined ? s.tireChange : true })) };
+              return { ...t, pilots: (t.pilots || []).map(p => ({ ...p, lapTime: p.lapTime || '1:48.500', active: p.active !== false })), settings: { ...baseSettings, ...savedSettings, comboTimes: { ...baseSettings.comboTimes, ...(savedSettings.comboTimes || {}) }, comboCons: { ...baseSettings.comboCons, ...(savedSettings.comboCons || {}) }, pilotComboTimes: { ...(savedSettings.pilotComboTimes || {}) }, pilotComboCons: { ...(savedSettings.pilotComboCons || {}) }, pilotComboWear: { ...(savedSettings.pilotComboWear || {}) }, tireChangeSec: savedSettings.tireChangeSec || baseSettings.tireChangeSec, defaultTireChange: savedSettings.defaultTireChange !== undefined ? savedSettings.defaultTireChange : baseSettings.defaultTireChange, tireChangeEvery: savedSettings.tireChangeEvery || baseSettings.tireChangeEvery, activeCombos: savedSettings.activeCombos || baseSettings.activeCombos }, stints: (t.stints || []).map(s => ({ ...s, tireChange: s.tireChange !== undefined ? s.tireChange : true })) };
             });
             // AJOUT: Fusionner les équipes manquantes
             const existingNames = migratedTeams.map(t => t.name);
@@ -11041,7 +11068,7 @@
                   } else {
                     // Données Firebase disponibles, créer avec ces données
                     const remoteSettings = remoteTeam.settings || {};
-                    const newTeam = { ...remoteTeam, name: teamName, id: remoteTeam.id || uid(), pilots: remoteTeam.pilots || createPilots(teamName), stints: (remoteTeam.stints || []).map(s => ({ ...s, tireChange: s.tireChange !== undefined ? s.tireChange : true })), settings: { ...baseSettings, ...remoteSettings, comboTimes: { ...baseSettings.comboTimes, ...(remoteSettings.comboTimes || {}) }, comboCons: { ...baseSettings.comboCons, ...(remoteSettings.comboCons || {}) }, pilotComboTimes: { ...(remoteSettings.pilotComboTimes || {}) }, pilotComboCons: { ...(remoteSettings.pilotComboCons || {}) }, activeCombos: remoteSettings.activeCombos || baseSettings.activeCombos } };
+                    const newTeam = { ...remoteTeam, name: teamName, id: remoteTeam.id || uid(), pilots: remoteTeam.pilots || createPilots(teamName), stints: (remoteTeam.stints || []).map(s => ({ ...s, tireChange: s.tireChange !== undefined ? s.tireChange : true })), settings: { ...baseSettings, ...remoteSettings, comboTimes: { ...baseSettings.comboTimes, ...(remoteSettings.comboTimes || {}) }, comboCons: { ...baseSettings.comboCons, ...(remoteSettings.comboCons || {}) }, pilotComboTimes: { ...(remoteSettings.pilotComboTimes || {}) }, pilotComboCons: { ...(remoteSettings.pilotComboCons || {}) }, pilotComboWear: { ...(remoteSettings.pilotComboWear || {}) }, activeCombos: remoteSettings.activeCombos || baseSettings.activeCombos } };
                     const newTeams = [...prevTeams, newTeam];
                     newTeams.sort((a, b) => TEAMS.indexOf(a.name) - TEAMS.indexOf(b.name));
                     return newTeams;
@@ -11049,7 +11076,7 @@
                 }
                 if (!remoteTeam) return prevTeams;
                 const remoteSettings = remoteTeam.settings || {};
-                const updatedTeam = { ...remoteTeam, pilots: remoteTeam.pilots || [], stints: (remoteTeam.stints || []).map(s => ({ ...s, tireChange: s.tireChange !== undefined ? s.tireChange : true })), settings: { ...baseSettings, ...remoteSettings, comboTimes: { ...baseSettings.comboTimes, ...(remoteSettings.comboTimes || {}) }, comboCons: { ...baseSettings.comboCons, ...(remoteSettings.comboCons || {}) }, pilotComboTimes: { ...(remoteSettings.pilotComboTimes || {}) }, pilotComboCons: { ...(remoteSettings.pilotComboCons || {}) }, tireChangeSec: remoteSettings.tireChangeSec || baseSettings.tireChangeSec, defaultTireChange: remoteSettings.defaultTireChange !== undefined ? remoteSettings.defaultTireChange : baseSettings.defaultTireChange, tireChangeEvery: remoteSettings.tireChangeEvery || baseSettings.tireChangeEvery, activeCombos: remoteSettings.activeCombos || baseSettings.activeCombos } };
+                const updatedTeam = { ...remoteTeam, pilots: remoteTeam.pilots || [], stints: (remoteTeam.stints || []).map(s => ({ ...s, tireChange: s.tireChange !== undefined ? s.tireChange : true })), settings: { ...baseSettings, ...remoteSettings, comboTimes: { ...baseSettings.comboTimes, ...(remoteSettings.comboTimes || {}) }, comboCons: { ...baseSettings.comboCons, ...(remoteSettings.comboCons || {}) }, pilotComboTimes: { ...(remoteSettings.pilotComboTimes || {}) }, pilotComboCons: { ...(remoteSettings.pilotComboCons || {}) }, pilotComboWear: { ...(remoteSettings.pilotComboWear || {}) }, tireChangeSec: remoteSettings.tireChangeSec || baseSettings.tireChangeSec, defaultTireChange: remoteSettings.defaultTireChange !== undefined ? remoteSettings.defaultTireChange : baseSettings.defaultTireChange, tireChangeEvery: remoteSettings.tireChangeEvery || baseSettings.tireChangeEvery, activeCombos: remoteSettings.activeCombos || baseSettings.activeCombos } };
                 const newTeams = [...prevTeams]; newTeams[teamIdx] = updatedTeam; return newTeams;
               });
               setSyncStatus('connected');
@@ -11761,12 +11788,13 @@
             })()}
             raceMode={raceMode.mode}
             onAutoImportChrono={(data) => {
-              // ═══ AUTO-IMPORT CHRONO PILOTE v30 ═══
+              // ═══ AUTO-IMPORT CHRONO PILOTE v30 + v33.19: usure pneus ═══
               if (!data || !data.pilotId || !data.combo) return;
               
               const key = data.pilotId + '_' + data.combo;
               const timeStr = Math.floor(data.avgLapTime / 60) + ':' + (data.avgLapTime % 60).toFixed(3).padStart(6, '0');
               const consStr = data.avgFuelCons.toFixed(2);
+              const wearStr = (data.avgTireWear || 0).toFixed(2);
               
               setTeams(prev => prev.map(t => {
                 if (t.name !== team.name) return t;
@@ -11780,17 +11808,21 @@
                   pilotComboCons: {
                     ...t.settings.pilotComboCons,
                     [key]: consStr
+                  },
+                  pilotComboWear: {
+                    ...t.settings.pilotComboWear,
+                    [key]: wearStr
                   }
                 };
                 
-                window.AGP_Logger?.info('Chrono pilote auto-importé', { pilot: data.pilotName, combo: data.combo, time: timeStr, conso: consStr });
+                window.AGP_Logger?.info('Chrono pilote auto-importé', { pilot: data.pilotName, combo: data.combo, time: timeStr, conso: consStr, wear: wearStr + '%' });
                 
                 // Notification
                 if (window.AGP_Notifications) {
                   window.AGP_Notifications.add({
                     type: 'success',
                     title: '✅ Chrono importé!',
-                    message: data.pilotName + ' - ' + data.combo + ': ' + timeStr + ' / ' + consStr + 'L (' + data.lapsCount + ' tours)',
+                    message: data.pilotName + ' - ' + data.combo + ': ' + timeStr + ' / ' + consStr + 'L / 🛞' + wearStr + '% (' + data.lapsCount + ' tours)',
                     duration: 5000
                   });
                 }
