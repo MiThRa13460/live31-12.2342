@@ -2,8 +2,27 @@
 <!--
   ═══════════════════════════════════════════════════════════════════
   TEAM AGP - Endurance Strategy Dashboard
-  v33.19 - GRANDE MISE À JOUR: Plugin v3.3.2 + Leaderboard + Données SimHub
+  v33.21 - Affichage données télémétrie complètes + fix météo
   ═══════════════════════════════════════════════════════════════════
+  
+  CHANGELOG v33.21 (03/01/2026):
+  - NEW: Températures moteur (huile/eau) dans section DÉGÂTS
+        → Affiche oilTemp et waterTemp si disponibles
+        → Code couleur: bleu (froid) / vert (ok) / orange (chaud) / rouge (critique)
+  - NEW: Gaps réels (↑avant ↓arrière) dans section DUEL
+        → Affiche gapAhead/gapBehind envoyés par le plugin
+        → Complète le gap calculé entre voitures
+  - FIX: Calcul rainProb intelligent basé sur humidity
+        → Plugin envoie raining=0/1 binaire, pas un pourcentage
+        → Nouveau calcul: humidity>85% → ~90% chance, humidity>70% → ~50%, etc.
+        → Alertes pluie fonctionnent maintenant correctement
+  - Mapping complet: tyretempFL/FR/RL/RR, tyrepressFL/FR/RL/RR déjà affichés
+  
+  CHANGELOG v33.20 (03/01/2026):
+  - FIX CRITIQUE: Collecte usure pneus PRÉ-COURSE
+        → Utilisait teamData.tires.fl.wear (N'EXISTE PAS!)
+        → Corrigé: utilise teamData.tyrewearFL/FR/RL/RR (bonnes propriétés)
+        → Valeurs déjà en % restant (plugin les transforme: 98% = pneu neuf)
   
   CHANGELOG v33.19 (02/01/2026):
   - LEADERBOARD: Classement complet avec tous les pilotes en course
@@ -53,7 +72,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>TEAM AGP - Endurance Strategy 24h v33.19</title>
+  <title>TEAM AGP - Endurance Strategy 24h v33.21</title>
   <script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
@@ -6893,14 +6912,14 @@
         const lastLapTime = teamData.lastLapTimeSec || parseFloat(teamData.lastLapTime) || 0;
         const fuelUsed = teamData.fuelUsedLastLap || 3.0;
         
-        // v33.19: Capturer usure pneus actuelle
-        const tires = teamData.tires || {};
+        // v33.20 FIX: Utiliser tyrewearFL/FR/RL/RR (pas tires.fl.wear qui n'existe pas!)
+        // Les valeurs sont déjà en % restant (plugin les transforme: 98% = pneu neuf)
         const tireWear = {
-          fl: tires.fl?.wear || 0,
-          fr: tires.fr?.wear || 0,
-          rl: tires.rl?.wear || 0,
-          rr: tires.rr?.wear || 0,
-          avg: ((tires.fl?.wear || 0) + (tires.fr?.wear || 0) + (tires.rl?.wear || 0) + (tires.rr?.wear || 0)) / 4
+          fl: teamData.tyrewearFL || 100,
+          fr: teamData.tyrewearFR || 100,
+          rl: teamData.tyrewearRL || 100,
+          rr: teamData.tyrewearRR || 100,
+          avg: ((teamData.tyrewearFL || 100) + (teamData.tyrewearFR || 100) + (teamData.tyrewearRL || 100) + (teamData.tyrewearRR || 100)) / 4
         };
         
         // Enregistrer si on a un temps valide
@@ -7919,6 +7938,35 @@
                 tyrewearRL: r.tyrewearRL ?? r.tyreRL ?? 100,
                 tyrewearRR: r.tyrewearRR ?? r.tyreRR ?? 100,
                 
+                // === v33.21: PNEUS (température) ===
+                tyretempFL: r.tyretempFL ?? 0,
+                tyretempFR: r.tyretempFR ?? 0,
+                tyretempRL: r.tyretempRL ?? 0,
+                tyretempRR: r.tyretempRR ?? 0,
+                
+                // === v33.21: PNEUS (pression) ===
+                tyrepressFL: r.tyrepressFL ?? 0,
+                tyrepressFR: r.tyrepressFR ?? 0,
+                tyrepressRL: r.tyrepressRL ?? 0,
+                tyrepressRR: r.tyrepressRR ?? 0,
+                
+                // === v33.21: MOTEUR (températures) ===
+                oilTemp: r.oilTemp ?? 0,
+                waterTemp: r.waterTemp ?? 0,
+                
+                // === v33.21: GAPS (écarts) ===
+                gapAhead: r.gaps?.ahead ?? null,
+                gapBehind: r.gaps?.behind ?? null,
+                carAhead: r.gaps?.carAhead ?? '',
+                carBehind: r.gaps?.carBehind ?? '',
+                driverAhead: r.gaps?.driverAhead ?? '',
+                driverBehind: r.gaps?.driverBehind ?? '',
+                
+                // === v33.21: ÉLECTRONIQUE ===
+                absLevel: r.electronics?.absLevel ?? 0,
+                tcLevel: r.electronics?.tcLevel ?? 0,
+                engineMap: r.electronics?.engineMap ?? 0,
+                
                 // === TEMPS AU TOUR ===
                 lastLapTimeSec: r.lastLapTimeSec ?? r.lastLapSec ?? 0,
                 // lastLapTime formaté pour affichage (MM:SS.mmm)
@@ -8740,21 +8788,30 @@
               }
             }
             
-            // ═══ MISE À JOUR MÉTÉO SIMHUB v32.5 ═══
-            // v32.4 FIX: Utiliser rawData car weather n'est pas mappé dans data
+            // ═══ MISE À JOUR MÉTÉO SIMHUB v33.21 ═══
+            // v33.21 FIX: Calcul rainProb basé sur humidity (raining est binaire 0/1)
             const carWithWeather = Object.values(rawData).find(car => car && car.weather);
             if (carWithWeather && carWithWeather.weather) {
               const w = carWithWeather.weather;
-              // v32.9: Pas de log météo (trop fréquent)
+              
+              // v33.21: Calculer rainProb intelligemment
+              // - Si raining=1 → 100%
+              // - Sinon utiliser humidity comme indicateur (>60% = risque)
+              const humidity = w.humidity ?? 0;
+              const isRaining = w.raining > 0.5;
+              const calculatedRainProb = isRaining ? 100 : 
+                humidity > 85 ? Math.min(90, humidity) :
+                humidity > 70 ? Math.round(humidity * 0.7) :
+                humidity > 60 ? Math.round((humidity - 60) * 2) : 0;
+              
               setMeteo(prev => ({
                 ...prev,
                 temp: w.ambientTemp ?? prev.temp,
                 piste: w.trackTemp ?? prev.piste,
-                // v32.5: Utiliser trajectoryTemp du plugin si disponible
                 pisteTrajectoire: w.trajectoryTemp ?? (w.trackTemp ? w.trackTemp + 4 : prev.pisteTrajectoire),
-                humidity: w.humidity ?? prev.humidity,
-                rainProb: w.raining ? Math.round(w.raining * 100) : prev.rainProb,
-                condition: w.raining > 0.5 ? 'rain' : w.raining > 0.1 ? 'partly' : 'clear',
+                humidity: humidity,
+                rainProb: calculatedRainProb,
+                condition: isRaining ? 'rain' : humidity > 80 ? 'cloudy' : humidity > 60 ? 'partly' : 'clear',
                 lastUpdate: Date.now(),
                 source: 'simhub'
               }));
@@ -10021,17 +10078,27 @@
                       </div>
                     </div>
                     
-                    {/* Pneus avec température */}
-                    <div className="card help-tooltip" data-help="PNEUS - Usure des 4 pneus en pourcentage et température. Vert >50%, Orange 30-50%, Rouge <30%. La température optimale est entre 80-95°C." style={{padding: '10px'}}>
+                    {/* Pneus avec température - v33.21: Temp et pression réelles */}
+                    <div className="card help-tooltip" data-help="PNEUS - Usure des 4 pneus en pourcentage, température et pression. Vert >50%, Orange 30-50%, Rouge <30%. Temp optimale: 80-95°C. Pression optimale: 1.7-2.1 bar." style={{padding: '10px'}}>
                       <div style={{fontWeight: '700', fontSize: '12px', marginBottom: '10px', color: 'var(--text-muted)'}}>🛞 PNEUS</div>
                       <div style={{display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '8px'}}>
-                        {[['FL', 'AVG'], ['FR', 'AVD'], ['RL', 'ARG'], ['RR', 'ARD']].map(([key, label]) => (
-                          <div key={key} style={{padding: '10px', background: 'var(--bg-input)', borderRadius: '6px', textAlign: 'center', border: '2px solid ' + getTyreColor(currentTeam.pneus[key])}}>
-                            <div style={{fontSize: '9px', color: 'var(--text-muted)'}}>{label}</div>
-                            <div style={{fontSize: '20px', fontWeight: '700', fontFamily: 'JetBrains Mono', color: getTyreColor(currentTeam.pneus[key])}}>{Math.round(currentTeam.pneus[key])}%</div>
-                            <div style={{fontSize: '10px', color: 'var(--cyan)'}}>87°C</div>
-                          </div>
-                        ))}
+                        {[['FL', 'AVG'], ['FR', 'AVD'], ['RL', 'ARG'], ['RR', 'ARD']].map(([key, label]) => {
+                          const telem = telemetryData[selectedTeam] || {};
+                          const temp = telem[`tyretemp${key}`] || 0;
+                          const press = telem[`tyrepress${key}`] || 0;
+                          const getTempColor = (t) => t < 70 ? 'var(--blue)' : t > 100 ? 'var(--red)' : t > 95 ? 'var(--orange)' : 'var(--green)';
+                          const getPressColor = (p) => p < 1.6 ? 'var(--blue)' : p > 2.2 ? 'var(--red)' : 'var(--green)';
+                          return (
+                            <div key={key} style={{padding: '8px', background: 'var(--bg-input)', borderRadius: '6px', textAlign: 'center', border: '2px solid ' + getTyreColor(currentTeam.pneus[key])}}>
+                              <div style={{fontSize: '9px', color: 'var(--text-muted)'}}>{label}</div>
+                              <div style={{fontSize: '18px', fontWeight: '700', fontFamily: 'JetBrains Mono', color: getTyreColor(currentTeam.pneus[key])}}>{Math.round(currentTeam.pneus[key])}%</div>
+                              <div style={{display: 'flex', justifyContent: 'center', gap: '6px', marginTop: '2px'}}>
+                                <span style={{fontSize: '9px', color: getTempColor(temp)}}>{temp > 0 ? `${Math.round(temp)}°` : '--'}</span>
+                                <span style={{fontSize: '9px', color: getPressColor(press)}}>{press > 0 ? `${press.toFixed(2)}` : '--'}</span>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                       <div style={{marginTop: '8px', display: 'flex', justifyContent: 'space-around', fontSize: '10px'}}>
                         <span>Usure moy: <strong>{Math.round((currentTeam.pneus.FL + currentTeam.pneus.FR + currentTeam.pneus.RL + currentTeam.pneus.RR) / 4)}%</strong></span>
@@ -10186,6 +10253,26 @@
                           <div style={{textAlign: 'center'}}><div style={{fontSize: '14px'}}>⚙️</div><div style={{fontSize: '8px', color: 'var(--text-muted)'}}>Moteur</div><div style={{fontSize: '11px', fontWeight: '700', color: vehicleDamage.engine > 30 ? 'var(--red)' : vehicleDamage.engine > 10 ? 'var(--orange)' : 'var(--green)'}}>{Math.round(vehicleDamage.engine)}%</div></div>
                           <div style={{textAlign: 'center'}}><div style={{fontSize: '14px'}}>🔩</div><div style={{fontSize: '8px', color: 'var(--text-muted)'}}>Susp.</div><div style={{fontSize: '11px', fontWeight: '700', color: vehicleDamage.suspension > 30 ? 'var(--red)' : vehicleDamage.suspension > 10 ? 'var(--orange)' : 'var(--green)'}}>{Math.round(vehicleDamage.suspension)}%</div></div>
                         </div>
+                        {/* v33.21: Températures moteur */}
+                        {(() => {
+                          const telem = telemetryData[selectedTeam] || {};
+                          const oil = telem.oilTemp || 0;
+                          const water = telem.waterTemp || 0;
+                          const getOilColor = (t) => t < 90 ? 'var(--blue)' : t > 140 ? 'var(--red)' : t > 120 ? 'var(--orange)' : 'var(--green)';
+                          const getWaterColor = (t) => t < 70 ? 'var(--blue)' : t > 110 ? 'var(--red)' : t > 100 ? 'var(--orange)' : 'var(--green)';
+                          return (oil > 0 || water > 0) ? (
+                            <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px', marginTop: '8px', paddingTop: '6px', borderTop: '1px dashed var(--border)'}}>
+                              <div style={{textAlign: 'center', padding: '4px', background: 'var(--bg-input)', borderRadius: '4px'}}>
+                                <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>🛢️ Huile</div>
+                                <div style={{fontSize: '13px', fontWeight: '700', fontFamily: 'JetBrains Mono', color: getOilColor(oil)}}>{oil > 0 ? `${Math.round(oil)}°C` : '--'}</div>
+                              </div>
+                              <div style={{textAlign: 'center', padding: '4px', background: 'var(--bg-input)', borderRadius: '4px'}}>
+                                <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>💧 Eau</div>
+                                <div style={{fontSize: '13px', fontWeight: '700', fontFamily: 'JetBrains Mono', color: getWaterColor(water)}}>{water > 0 ? `${Math.round(water)}°C` : '--'}</div>
+                              </div>
+                            </div>
+                          ) : null;
+                        })()}
                         <div style={{marginTop: '8px', textAlign: 'center', padding: '4px 8px', borderRadius: '4px', fontSize: '10px', fontWeight: '600', background: vehicleDamage.total > 50 ? 'rgba(255,51,68,0.2)' : vehicleDamage.total > 20 ? 'rgba(255,136,0,0.2)' : 'rgba(0,255,102,0.1)', color: vehicleDamage.total > 50 ? 'var(--red)' : vehicleDamage.total > 20 ? 'var(--orange)' : 'var(--green)'}}>
                           {vehicleDamage.total > 50 ? '⚠️ CRITIQUE - Rentrer aux stands!' : vehicleDamage.total > 20 ? '⚠️ Dégâts modérés' : vehicleDamage.total > 5 ? '✅ Dégâts mineurs' : '✅ Véhicule intact'}
                         </div>
@@ -10551,6 +10638,14 @@
                             <div style={{textAlign: 'right'}}>
                               <div style={{fontSize: '10px', color: 'var(--cyan)', fontFamily: 'JetBrains Mono'}}>{data.lastLapTime || liveData?.lastLapTime || '--:--.---'}</div>
                               <div style={{fontSize: '8px', color: 'var(--text-muted)'}}>T{data.currentLap || liveData?.currentLap || '-'}</div>
+                              {/* v33.21: Gaps réels du plugin */}
+                              {(data.gapAhead || data.gapBehind) && (
+                                <div style={{fontSize: '7px', color: 'var(--text-muted)', marginTop: '2px'}}>
+                                  {data.gapAhead > 0 && <span style={{color: 'var(--green)'}}>↑{data.gapAhead.toFixed(1)}s</span>}
+                                  {data.gapAhead > 0 && data.gapBehind > 0 && ' | '}
+                                  {data.gapBehind > 0 && <span style={{color: 'var(--orange)'}}>↓{data.gapBehind.toFixed(1)}s</span>}
+                                </div>
+                              )}
                             </div>
                             {(liveData?.isInPit === 1 || data.isInPit === 1) && <span style={{fontSize: '10px', color: 'var(--orange)'}}>📍</span>}
                           </div>
